@@ -4,6 +4,7 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
+const authMiddleware = require("../middleware/auth"); // import auth middleware
 
 const router = express.Router();
 
@@ -39,26 +40,14 @@ router.post("/login", async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ message: "Invalid email or password" });
 
-    /*const token = jwt.sign(
-      { id: user._id, email: user.email },
-      process.env.JWT_SECRET,
-      { expiresIn: "1h" }
-    );*/
+    if (!process.env.JWT_SECRET)
+      return res.status(500).json({ message: "JWT_SECRET not defined" });
+
     const token = jwt.sign(
       { id: user._id, email: user.email, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: "1h" }
-  );
-  router.delete("/admin/delete-user/:id",
-  authMiddleware,
-  adminMiddleware,
-  async (req, res) => {
-    await User.findByIdAndDelete(req.params.id);
-    res.json({ message: "User deleted by admin" });
-  }
-);
-
-
+    );
 
     res.json({
       message: "Login successful ✅",
@@ -67,8 +56,25 @@ router.post("/login", async (req, res) => {
     });
 
   } catch (error) {
+    console.error(error); // logs the real error
     res.status(500).json({ error: error.message });
   }
 });
+
+// ===== ADMIN DELETE USER (optional) =====
+router.delete("/admin/delete-user/:id",
+  authMiddleware,
+  async (req, res) => {
+    try {
+      // only allow admins (if you have a role field)
+      if (req.user.role !== "admin") return res.status(403).json({ message: "Forbidden" });
+
+      await User.findByIdAndDelete(req.params.id);
+      res.json({ message: "User deleted by admin" });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
 
 module.exports = router;

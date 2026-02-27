@@ -3,10 +3,16 @@ const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 
+
 const authRoutes = require("./src/routes/auth");
 const listingRoutes = require("./src/routes/listings");
 
 const app = express();
+
+const allowedOrigins = [
+  process.env.FRONTEND_ORIGIN,
+  process.env.FRONTEND_ORIGIN?.replace("https://", "https://www."),
+].filter(Boolean);
 
 app.use(cors({
   origin: process.env.FRONTEND_ORIGIN,
@@ -14,6 +20,9 @@ app.use(cors({
 }));
 
 app.use(express.json());
+
+// ✅ add this
+app.get("/health", (req, res) => res.json({ ok: true }));
 
 // ROUTES
 app.use("/api/auth", authRoutes);
@@ -23,7 +32,7 @@ mongoose.connect(process.env.MONGODB_URI)
   .then(() => {
     console.log("MongoDB connected");
     app.listen(process.env.PORT || 5000, () =>
-      console.log("Server running")
+      console.log("Server running on port", process.env.PORT || 5000)
     );
   })
   .catch(err => console.log(err));

@@ -3,11 +3,13 @@ const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 
-
 const authRoutes = require("./src/routes/auth");
 const listingRoutes = require("./src/routes/listings");
 const enquiryRoutes = require("./src/routes/enquiries");
 const messageRoutes = require("./src/routes/messages");
+const bidRoutes = require("./src/routes/bids");
+const orderRoutes = require("./src/routes/orders");
+const verifyRoutes = require("./src/routes/verify");
 
 const app = express();
 
@@ -17,26 +19,27 @@ const allowedOrigins = [
 ].filter(Boolean);
 
 app.use(cors({
-  origin: process.env.FRONTEND_ORIGIN,
+  origin: allowedOrigins.length ? allowedOrigins : true,
   credentials: false
 }));
 
-app.use("/api/messages", messageRoutes);
-
-app.use("/api/enquiries", enquiryRoutes);
-
-app.use(express.json());
+app.use(express.json({ limit: "2mb" }));
 
 app.get("/", (req, res) => {
-  res.json({ message: "Basemarket API running 🚀" });
+  res.json({ message: "BaseMarket API running 🚀" });
 });
 
-// ✅ add this
 app.get("/health", (req, res) => res.json({ ok: true }));
 
 // ROUTES
 app.use("/api/auth", authRoutes);
 app.use("/api/listings", listingRoutes);
+app.use("/api/enquiries", enquiryRoutes);
+app.use("/api/messages", messageRoutes);
+
+app.use("/api/bids", bidRoutes);
+app.use("/api/orders", orderRoutes);
+app.use("/api/verify", verifyRoutes);
 
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => {

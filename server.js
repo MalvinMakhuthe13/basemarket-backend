@@ -6,6 +6,8 @@ const cors = require("cors");
 
 const authRoutes = require("./src/routes/auth");
 const listingRoutes = require("./src/routes/listings");
+const enquiryRoutes = require("./src/routes/enquiries");
+const messageRoutes = require("./src/routes/messages");
 
 const app = express();
 
@@ -18,6 +20,10 @@ app.use(cors({
   origin: process.env.FRONTEND_ORIGIN,
   credentials: false
 }));
+
+app.use("/api/messages", messageRoutes);
+
+app.use("/api/enquiries", enquiryRoutes);
 
 app.use(express.json());
 

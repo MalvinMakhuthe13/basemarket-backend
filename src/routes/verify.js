@@ -15,7 +15,8 @@ router.post("/email/start", requireAuth, async (req, res, next) => {
     await EmailVerifyToken.create({ user: req.user.id, token, expiresAt });
 
     const frontend = process.env.FRONTEND_ORIGIN || "";
-    const link = frontend ? `${frontend.replace(/\\/$/, "")}/?email_verify=${token}` : token;
+    const base = frontend.endsWith("/") ? frontend.slice(0, -1) : frontend;
+    const link = frontend ? `${base}/?email_verify=${token}` : token;
 
     res.json({ token, link, message: "Email verification started" });
   } catch (e) { next(e); }

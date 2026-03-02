@@ -6,7 +6,12 @@ const router = express.Router();
 
 router.get("/", async (req, res, next) => {
   try {
-    const items = await Listing.find({ status: "active" }).populate("owner", "name email verified seller phone").sort({ createdAt: -1 }).lean();
+    const items = await Listing.find({
+  $or: [
+    { status: "active" },
+    { status: { $exists: false } } // older docs with no status field
+  ]
+}).populate("owner", "name email verified seller phone").sort({ createdAt: -1 }).lean();
     res.json(items);
   } catch (e) { next(e); }
 });

@@ -97,6 +97,13 @@ router.post("/phone/confirm", auth, async (req, res) => {
 // POST /api/verify/email/start
 // Sends a 6-digit OTP to the logged-in user's email address.
 router.post("/email/start", auth, async (req, res) => {
+  console.log("EMAIL OTP START:", { userId: req.user?.id, time: new Date().toISOString() });
+console.log("SMTP CONFIG:", {
+  host: process.env.SMTP_HOST,
+  port: process.env.SMTP_PORT,
+  secure: process.env.SMTP_SECURE,
+  user: process.env.SMTP_USER
+});
   try {
     const user = await User.findById(req.user.id).select("email emailOtp");
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -123,9 +130,11 @@ router.post("/email/start", auth, async (req, res) => {
         `Your BaseMarket verification code is ${otp}. It expires in 10 minutes.`
       );
     } catch (mailErr) {
+
       user.emailOtp = { codeHash: "", expiresAt: null, lastSentAt: null };
       await user.save();
       return res.status(500).json({ message: mailErr.message || "Failed to send email OTP" });
+      console.error("EMAIL OTP ERROR FULL:", mailErr);
     }
 
     res.json({ message: "OTP sent to your email" });

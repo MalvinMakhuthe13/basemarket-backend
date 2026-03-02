@@ -6,6 +6,8 @@ const Listing = require("../models/Listing");
 const User = require("../models/User");
 const Conversation = require("../models/Conversation");
 const Message = require("../models/Message");
+const mongoose = require("mongoose");
+const requirePhoneVerified = require("../middleware/requirePhoneVerified");
 
 // Helper
 function getUserId(req){
@@ -14,11 +16,16 @@ function getUserId(req){
 
 // POST /api/messages/start { listingId }
 // Creates or returns a conversation for (listing + buyer).
-router.post("/start", auth, async (req, res) => {
+router.post("/start", auth, requirePhoneVerified, async (req, res) => {
   try {
     const userId = getUserId(req);
     const { listingId } = req.body || {};
     if (!listingId) return res.status(400).json({ message: "listingId is required" });
+
+    // Prevent Mongoose CastError -> 500 when frontend accidentally sends a non-ObjectId
+    if (!mongoose.Types.ObjectId.isValid(String(listingId))) {
+      return res.status(400).json({ message: "Invalid listingId" });
+    }
 
     const listing = await Listing.findById(listingId);
     if (!listing) return res.status(404).json({ message: "Listing not found" });
@@ -38,7 +45,18 @@ router.post("/start", auth, async (req, res) => {
       });
     }
 
-    res.json(conv);
+    // Frontend compatibility: some builds expect { conversationId }
+    res.json({
+      conversationId: conv._id,
+      _id: conv._id,
+      listing: conv.listing,
+      seller: conv.seller,
+      buyer: conv.buyer,
+      lastMessage: conv.lastMessage,
+      lastMessageAt: conv.lastMessageAt,
+      createdAt: conv.createdAt,
+      updatedAt: conv.updatedAt,
+    });
   } catch (err) {
     // handle duplicate index race
     if (err && err.code === 11000) {
@@ -90,7 +108,8 @@ router.get("/", auth, async (req, res) => {
       };
     });
 
-    res.json(out);
+    // Frontend compatibility: some builds expect { conversations: [...] }
+    res.json({ conversations: out, items: out });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
@@ -114,14 +133,16 @@ router.get("/:conversationId", auth, async (req, res) => {
 
     const msgs = await Message.find({ conversation: conversationId }).sort({ createdAt: 1 });
 
-    // Return minimal fields
-    res.json(msgs.map(m => ({
+    const out = msgs.map(m => ({
       _id: m._id,
       conversation: m.conversation,
       sender: m.sender,
       text: m.text,
       createdAt: m.createdAt,
-    })));
+    }));
+
+    // Frontend compatibility: some builds expect { messages: [...] }
+    res.json({ messages: out, items: out });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
@@ -130,7 +151,7 @@ router.get("/:conversationId", auth, async (req, res) => {
 
 // POST /api/messages/:conversationId { text }
 // Sends a message
-router.post("/:conversationId", auth, async (req, res) => {
+router.post("/:conversationId", auth, requirePhoneVerified, async (req, res) => {
   try {
     const userId = getUserId(req);
     const { conversationId } = req.params;

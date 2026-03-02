@@ -4,14 +4,24 @@ const router = express.Router();
 const auth = require("../middleware/auth");
 const Order = require("../models/Order");
 const Listing = require("../models/Listing");
+const mongoose = require("mongoose");
+const requirePhoneVerified = require("../middleware/requirePhoneVerified");
+
 
 // POST /api/orders { listingId, qty, mode, contact, address, notes }
-router.post("/", auth, async (req, res) => {
+router.post("/", auth, requirePhoneVerified, async (req, res) => {
   try {
     const { listingId, qty = 1, mode = "item", contact, address = "", notes = "" } = req.body;
     if (!listingId) return res.status(400).json({ message: "listingId is required" });
     if (!contact) return res.status(400).json({ message: "contact is required" });
+    
 
+  
+if (!mongoose.Types.ObjectId.isValid(listingId)) {
+  return res.status(400).json({ message: "Invalid listingId" });
+}
+ 
+    
     const listing = await Listing.findById(listingId);
     if (!listing) return res.status(404).json({ message: "Listing not found" });
 

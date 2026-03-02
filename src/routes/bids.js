@@ -2,12 +2,13 @@ const express = require("express");
 const router = express.Router();
 const auth = require("../middleware/auth");
 const Listing = require("../models/Listing");
+const requirePhoneVerified = require("../middleware/requirePhoneVerified");
 
 // POST /api/bids/:listingId { amount }
 // Rules:
 // - Only during auction window (if start/end provided)
 // - Listing owner cannot bid (prevents "seller bidding against bidders")
-router.post("/:listingId", auth, async (req, res) => {
+router.post("/:listingId", auth, requirePhoneVerified, async (req, res) => {
   try {
     const amount = Number(req.body.amount);
     if (!Number.isFinite(amount) || amount <= 0) {

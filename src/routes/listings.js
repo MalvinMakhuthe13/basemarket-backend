@@ -1,16 +1,19 @@
 const express = require("express");
 const Listing = require("../models/Listing");
 const auth = require("../middleware/auth");
+const requirePhoneVerified = require("../middleware/requirePhoneVerified");
 
 const router = express.Router();
 
 // CREATE LISTING
-router.post("/", auth, async (req, res) => {
+router.post("/", auth, requirePhoneVerified, async (req, res) => {
   try {
-    const listing = await Listing.create({ 
-        owner: req.user.id,
-        data: req.body 
-    })
+    // Store listing fields flat for easier querying.
+    // (We still accept any extra fields because Listing schema uses strict:false)
+    const listing = await Listing.create({
+      owner: req.user.id,
+      ...req.body,
+    });
 
     res.json(listing);
   } catch (err) {
@@ -20,8 +23,17 @@ router.post("/", auth, async (req, res) => {
 
 // GET ALL LISTINGS
 router.get("/", async (req, res) => {
-  const listings = await Listing.find().populate("owner", "name");
-  res.json(listings);
+  const listings = await Listing.find().populate("owner", "name emailVerified phone");
+  const shaped = listings.map(l => {
+    const o = l.owner || {};
+    const ownerVerified = Boolean(o.emailVerified || (o.phone && o.phone.verified));
+    return {
+      ...l.toObject(),
+      ownerName: o.name || "",
+      ownerVerified
+    };
+  });
+  res.json(shaped);
 });
 
 // GET MY LISTINGS

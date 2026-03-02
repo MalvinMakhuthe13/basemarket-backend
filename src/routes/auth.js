@@ -2,6 +2,7 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
+const { requireAuth } = require("../middleware/auth");
 
 const router = express.Router();
 
@@ -51,5 +52,14 @@ router.post("/login", async (req, res, next) => {
     });
   } catch (e) { next(e); }
 });
+
+router.get("/me", requireAuth, async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user.id).select("-passwordHash").lean();
+    if (!user) return res.status(404).json({ message: "User not found" });
+    res.json({ user });
+  } catch (e) { next(e); }
+});
+
 
 module.exports = router;

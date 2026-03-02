@@ -1,198 +1,97 @@
 const express = require("express");
+const { requireAuth } = require("../middleware/auth");
+const Conversation = require("../models/Conversation");
+const Listing = require("../models/Listing");
+const { pickListingTitle } = require("../utils/common");
+
 const router = express.Router();
 
-const auth = require("../middleware/auth");
-const Listing = require("../models/Listing");
-const User = require("../models/User");
-const Conversation = require("../models/Conversation");
-const Message = require("../models/Message");
-const mongoose = require("mongoose");
-const requirePhoneVerified = require("../middleware/requirePhoneVerified");
-
-// Helper
-function getUserId(req){
-  return req.user?.id || req.user?._id;
-}
-
-// POST /api/messages/start { listingId }
-// Creates or returns a conversation for (listing + buyer).
-router.post("/start", auth, requirePhoneVerified, async (req, res) => {
+router.get("/", requireAuth, async (req, res, next) => {
   try {
-    const userId = getUserId(req);
-    const { listingId } = req.body || {};
-    if (!listingId) return res.status(400).json({ message: "listingId is required" });
-
-    // Prevent Mongoose CastError -> 500 when frontend accidentally sends a non-ObjectId
-    if (!mongoose.Types.ObjectId.isValid(String(listingId))) {
-      return res.status(400).json({ message: "Invalid listingId" });
-    }
-
-    const listing = await Listing.findById(listingId);
-    if (!listing) return res.status(404).json({ message: "Listing not found" });
-
-    const sellerId = listing.owner?.toString ? listing.owner.toString() : String(listing.owner);
-
-    if (String(sellerId) === String(userId)) {
-      return res.status(400).json({ message: "You cannot message your own listing." });
-    }
-
-    let conv = await Conversation.findOne({ listing: listingId, buyer: userId });
-    if (!conv) {
-      conv = await Conversation.create({
-        listing: listingId,
-        seller: sellerId,
-        buyer: userId,
-      });
-    }
-
-    // Frontend compatibility: some builds expect { conversationId }
-    res.json({
-      conversationId: conv._id,
-      _id: conv._id,
-      listing: conv.listing,
-      seller: conv.seller,
-      buyer: conv.buyer,
-      lastMessage: conv.lastMessage,
-      lastMessageAt: conv.lastMessageAt,
-      createdAt: conv.createdAt,
-      updatedAt: conv.updatedAt,
-    });
-  } catch (err) {
-    // handle duplicate index race
-    if (err && err.code === 11000) {
-      const { listingId } = req.body || {};
-      const userId = getUserId(req);
-      const conv = await Conversation.findOne({ listing: listingId, buyer: userId });
-      return res.json(conv);
-    }
-    console.error(err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-// GET /api/messages
-// Lists conversations for current user (as seller or buyer)
-router.get("/", auth, async (req, res) => {
-  try {
-    const userId = getUserId(req);
-
+    const myId = req.user.id;
     const convs = await Conversation.find({
-      $or: [{ seller: userId }, { buyer: userId }],
+      $or: [{ buyer: myId }, { seller: myId }]
     })
-      .sort({ lastMessageAt: -1, updatedAt: -1 })
-      .populate("listing")
-      .populate("seller", "name email")
-      .populate("buyer", "name email");
+      .populate("listing", "title name")
+      .sort({ updatedAt: -1 })
+      .lean();
 
-    const out = convs.map((c) => {
-      const isSeller = String(c.seller?._id || c.seller) === String(userId);
-      const other = isSeller ? c.buyer : c.seller;
-
-      // listing title could be stored various ways (flat or nested)
-      const l = c.listing || {};
-      const listingTitle =
-        l.name ||
-        l.title ||
-        (l.data && (l.data.name || l.data.title)) ||
-        "Listing";
-
-      return {
-        _id: c._id,
-        listingId: l._id,
-        listingTitle,
-        otherUserId: other?._id,
-        otherUserName: other?.name || other?.email || "User",
-        lastMessage: c.lastMessage || "",
-        lastMessageAt: c.lastMessageAt,
-        updatedAt: c.updatedAt,
-      };
-    });
-
-    // Frontend compatibility: some builds expect { conversations: [...] }
-    res.json({ conversations: out, items: out });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-// GET /api/messages/:conversationId
-// Returns messages (only if user is part of conversation)
-router.get("/:conversationId", auth, async (req, res) => {
-  try {
-    const userId = getUserId(req);
-    const { conversationId } = req.params;
-
-    const conv = await Conversation.findById(conversationId);
-    if (!conv) return res.status(404).json({ message: "Conversation not found" });
-
-    const allowed =
-      String(conv.seller) === String(userId) || String(conv.buyer) === String(userId);
-
-    if (!allowed) return res.status(403).json({ message: "Not allowed" });
-
-    const msgs = await Message.find({ conversation: conversationId }).sort({ createdAt: 1 });
-
-    const out = msgs.map(m => ({
-      _id: m._id,
-      conversation: m.conversation,
-      sender: m.sender,
-      text: m.text,
-      createdAt: m.createdAt,
+    const out = convs.map(c => ({
+      _id: c._id,
+      listingId: c.listing?._id || c.listing,
+      listingTitle: pickListingTitle(c.listing),
+      lastMessage: c.lastMessage || "",
+      lastMessageAt: c.lastMessageAt || c.updatedAt,
+      updatedAt: c.updatedAt,
     }));
 
-    // Frontend compatibility: some builds expect { messages: [...] }
-    res.json({ messages: out, items: out });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Server error" });
-  }
+    res.json({ conversations: out });
+  } catch (e) { next(e); }
 });
 
-// POST /api/messages/:conversationId { text }
-// Sends a message
-router.post("/:conversationId", auth, requirePhoneVerified, async (req, res) => {
+router.post("/start", requireAuth, async (req, res, next) => {
   try {
-    const userId = getUserId(req);
-    const { conversationId } = req.params;
-    const { text } = req.body || {};
+    const { listingId, text } = req.body || {};
+    if (!listingId) return res.status(400).json({ message: "Missing listingId" });
 
-    if (!text || !String(text).trim()) {
-      return res.status(400).json({ message: "Message text is required" });
+    const listing = await Listing.findById(listingId).populate("owner", "_id name").lean();
+    if (!listing) return res.status(404).json({ message: "Listing not found" });
+
+    const sellerId = listing.owner?._id || listing.owner;
+    const buyerId = req.user.id;
+    if (String(sellerId) === String(buyerId)) return res.status(400).json({ message: "Cannot message yourself" });
+
+    let conv = await Conversation.findOne({ listing: listingId, buyer: buyerId, seller: sellerId });
+    if (!conv) {
+      conv = await Conversation.create({ listing: listingId, buyer: buyerId, seller: sellerId });
     }
 
-    const conv = await Conversation.findById(conversationId);
-    if (!conv) return res.status(404).json({ message: "Conversation not found" });
+    if (text && String(text).trim()) {
+      conv.messages.push({ sender: buyerId, text: String(text).trim() });
+      conv.lastMessage = String(text).trim();
+      conv.lastMessageAt = new Date();
+      await conv.save();
+    }
 
-    const allowed =
-      String(conv.seller) === String(userId) || String(conv.buyer) === String(userId);
+    res.json({ conversationId: conv._id });
+  } catch (e) { next(e); }
+});
 
+router.get("/:id", requireAuth, async (req, res, next) => {
+  try {
+    const c = await Conversation.findById(req.params.id)
+      .populate("messages.sender", "name email")
+      .lean();
+
+    if (!c) return res.status(404).json({ message: "Conversation not found" });
+
+    const myId = req.user.id;
+    const allowed = String(c.buyer) === String(myId) || String(c.seller) === String(myId);
     if (!allowed) return res.status(403).json({ message: "Not allowed" });
 
-    const msg = await Message.create({
-      conversation: conversationId,
-      sender: userId,
-      text: String(text).trim(),
-    });
+    res.json({ messages: c.messages || [] });
+  } catch (e) { next(e); }
+});
 
-    // Update conversation summary
-    conv.lastMessage = msg.text.slice(0, 300);
-    conv.lastMessageAt = msg.createdAt;
+router.post("/:id", requireAuth, async (req, res, next) => {
+  try {
+    const { text } = req.body || {};
+    if (!text || !String(text).trim()) return res.status(400).json({ message: "Message empty" });
+
+    const conv = await Conversation.findById(req.params.id);
+    if (!conv) return res.status(404).json({ message: "Conversation not found" });
+
+    const myId = req.user.id;
+    const allowed = String(conv.buyer) === String(myId) || String(conv.seller) === String(myId);
+    if (!allowed) return res.status(403).json({ message: "Not allowed" });
+
+    conv.messages.push({ sender: myId, text: String(text).trim() });
+    conv.lastMessage = String(text).trim();
+    conv.lastMessageAt = new Date();
     await conv.save();
 
-    res.json({
-      ok: true,
-      message: {
-        _id: msg._id,
-        sender: msg.sender,
-        text: msg.text,
-        createdAt: msg.createdAt,
-      },
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Server error" });
-  }
+    res.json({ message: "Sent" });
+  } catch (e) { next(e); }
 });
 
 module.exports = router;

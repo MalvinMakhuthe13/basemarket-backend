@@ -1,60 +1,45 @@
 const express = require("express");
 const Listing = require("../models/Listing");
-const auth = require("../middleware/auth");
-const requirePhoneVerified = require("../middleware/requirePhoneVerified");
+const { requireAuth } = require("../middleware/auth");
 
 const router = express.Router();
 
-// CREATE LISTING
-router.post("/", auth, requirePhoneVerified, async (req, res) => {
+router.get("/", async (req, res, next) => {
   try {
-    // Store listing fields flat for easier querying.
-    // (We still accept any extra fields because Listing schema uses strict:false)
-    const listing = await Listing.create({
+    const items = await Listing.find({ status: "active" }).populate("owner", "name email verified seller phone").sort({ createdAt: -1 }).lean();
+    res.json(items);
+  } catch (e) { next(e); }
+});
+
+router.post("/", requireAuth, async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const doc = await Listing.create({
       owner: req.user.id,
-      ...req.body,
+      title: b.title || b.name || "",
+      name: b.name || b.title || "",
+      description: b.description || "",
+      price: Number(b.price || 0),
+      currency: b.currency || "ZAR",
+      category: b.category || "sell",
+      images: Array.isArray(b.images) ? b.images : (b.image ? [b.image] : []),
+      location: b.location || "",
     });
-
-    res.json(listing);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
+    const populated = await Listing.findById(doc._id).populate("owner", "name email verified seller phone").lean();
+    res.json(populated);
+  } catch (e) { next(e); }
 });
 
-// GET ALL LISTINGS
-router.get("/", async (req, res) => {
-  const listings = await Listing.find().populate("owner", "name emailVerified phone");
-  const shaped = listings.map(l => {
-    const o = l.owner || {};
-    const ownerVerified = Boolean(o.emailVerified || (o.phone && o.phone.verified));
-    return {
-      ...l.toObject(),
-      ownerName: o.name || "",
-      ownerVerified
-    };
-  });
-  res.json(shaped);
-});
+router.delete("/:id", requireAuth, async (req, res, next) => {
+  try {
+    const item = await Listing.findById(req.params.id);
+    if (!item) return res.status(404).json({ message: "Listing not found" });
+    if (String(item.owner) !== String(req.user.id)) return res.status(403).json({ message: "Not allowed" });
 
-// GET MY LISTINGS
-router.get("/mine", auth, async (req, res) => {
-  const listings = await Listing.find({ owner: req.user.id });
-  res.json(listings);
-});
-
-// DELETE LISTING
-router.delete("/:id", auth, async (req, res) => {
-  const listing = await Listing.findById(req.params.id);
-
-  if (!listing)
-    return res.status(404).json({ message: "Listing not found" });
-
-  if (listing.owner.toString() !== req.user.id)
-    return res.status(403).json({ message: "Not allowed" });
-
-  await listing.deleteOne();
-
-  res.json({ message: "Listing deleted" });
+    item.status = "deleted";
+    await item.save();
+    res.json({ message: "Deleted" });
+  } catch (e) { next(e); }
 });
 
 module.exports = router;

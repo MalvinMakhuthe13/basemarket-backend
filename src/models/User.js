@@ -1,36 +1,31 @@
 const mongoose = require("mongoose");
 
-const userSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  email: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
+const PhoneSchema = new mongoose.Schema({
+  number: { type: String, default: "" },
+  verified: { type: Boolean, default: false },
+}, { _id: false });
+
+const SellerSchema = new mongoose.Schema({
+  status: { type: String, enum: ["none", "pending", "approved", "rejected"], default: "none" },
+  requestedAt: { type: Date },
+  decidedAt: { type: Date },
+  decisionReason: { type: String, default: "" },
+}, { _id: false });
+
+const UserSchema = new mongoose.Schema({
+  name: { type: String, required: true, trim: true },
+  email: { type: String, required: true, unique: true, trim: true, lowercase: true },
+  passwordHash: { type: String, required: true },
+  role: { type: String, enum: ["user", "admin"], default: "user" },
 
   emailVerified: { type: Boolean, default: false },
+  verified: { type: Boolean, default: false }, // trust verification badge
+  verifiedAt: { type: Date },
+  verifiedNote: { type: String, default: "" },
 
-  phone: {
-    number: { type: String, default: "" },
-    verified: { type: Boolean, default: false },
-  },
+  phone: { type: PhoneSchema, default: () => ({}) },
+  seller: { type: SellerSchema, default: () => ({}) },
 
-  // Phone OTP (backend-generated; integrate with SMS provider later)
-  phoneOtp: {
-    codeHash: { type: String, default: "" },
-    expiresAt: { type: Date, default: null },
-    lastSentAt: { type: Date, default: null },
-  },
-
-  seller: {
-    status: {
-      type: String,
-      enum: ["none", "pending", "verified", "rejected"],
-      default: "none"
-    },
-    fullname: { type: String, default: "" },
-    area: { type: String, default: "" },
-    submittedAt: { type: Date, default: null },
-    reviewedAt: { type: Date, default: null },
-    reviewNote: { type: String, default: "" },
-  }
 }, { timestamps: true });
 
-module.exports = mongoose.model("User", userSchema);
+module.exports = mongoose.model("User", UserSchema);

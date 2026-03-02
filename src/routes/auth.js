@@ -5,83 +5,51 @@ const User = require("../models/User");
 
 const router = express.Router();
 
-/* ================= REGISTER ================= */
-router.post("/register", async (req, res) => {
+function sign(user) {
+  return jwt.sign({ id: user._id.toString(), email: user.email, role: user.role }, process.env.JWT_SECRET, { expiresIn: "7d" });
+}
+
+router.post("/register", async (req, res, next) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, password } = req.body || {};
+    if (!name || !email || !password) return res.status(400).json({ message: "Missing fields" });
 
-    // check if user exists
-    const existingUser = await User.findOne({ email });
-    if (existingUser)
-      return res.status(400).json({ message: "Email already exists" });
+    const exists = await User.findOne({ email: String(email).toLowerCase().trim() });
+    if (exists) return res.status(400).json({ message: "Email already registered" });
 
-    // hash password
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const passwordHash = await bcrypt.hash(String(password), 10);
+    const user = await User.create({ name: String(name).trim(), email: String(email).toLowerCase().trim(), passwordHash });
 
-    const user = await User.create({
-      name,
-      email,
-      password: hashedPassword,
-    });
-
-    // create token
-    const token = jwt.sign(
-      { id: user._id },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
-    res.status(201).json({
-      message: "User registered",
-      token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        phone: user.phone,
-        seller: user.seller,
-      },
-    });
-
-  } catch (err) {
-    res.status(500).json({ message: "Server error" });
-  }
+    return res.json({ message: "Registered", user: { id: user._id, name: user.name, email: user.email } });
+  } catch (e) { next(e); }
 });
 
-/* ================= LOGIN ================= */
-router.post("/login", async (req, res) => {
+router.post("/login", async (req, res, next) => {
   try {
-    const { email, password } = req.body;
+    const { email, password } = req.body || {};
+    if (!email || !password) return res.status(400).json({ message: "Missing fields" });
 
-    const user = await User.findOne({ email });
-    if (!user)
-      return res.status(400).json({ message: "Invalid credentials" });
+    const user = await User.findOne({ email: String(email).toLowerCase().trim() });
+    if (!user) return res.status(401).json({ message: "Invalid credentials" });
 
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch)
-      return res.status(400).json({ message: "Invalid credentials" });
+    const ok = await bcrypt.compare(String(password), user.passwordHash);
+    if (!ok) return res.status(401).json({ message: "Invalid credentials" });
 
-    const token = jwt.sign(
-      { id: user._id },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
-    res.json({
-      message: "Login successful",
+    const token = sign(user);
+    return res.json({
       token,
       user: {
         id: user._id,
         name: user.name,
         email: user.email,
-        phone: user.phone,
+        emailVerified: user.emailVerified,
+        verified: user.verified,
         seller: user.seller,
-      },
+        phone: user.phone,
+        role: user.role,
+      }
     });
-
-  } catch (err) {
-    res.status(500).json({ message: "Server error" });
-  }
+  } catch (e) { next(e); }
 });
 
 module.exports = router;

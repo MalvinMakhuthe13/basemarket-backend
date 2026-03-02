@@ -16,7 +16,12 @@ function getSmtpConfig(){
 let _transporter = null;
 function transporter(){
   if (_transporter) return _transporter;
-  _transporter = nodemailer.createTransport(getSmtpConfig());
+ _transporter = nodemailer.createTransport({
+  ...getSmtpConfig(),
+  connectionTimeout: 10000, // 10s
+  greetingTimeout: 10000,
+  socketTimeout: 15000,
+});
   return _transporter;
 }
 

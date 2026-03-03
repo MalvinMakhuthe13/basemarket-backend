@@ -32,7 +32,7 @@ router.get("/", async (req, res, next) => {
         if (String(it.category || "").toLowerCase() === "auction" && it.auctionEnd) {
           const end = new Date(it.auctionEnd);
           if (Number.isFinite(end.getTime()) && Date.now() > end.getTime()) {
-            it.status = it.status === "deleted" ? "deleted" : (it.status || "active");
+            if (it.status !== "deleted" && it.status !== "sold") it.status = "ended";
           }
         }
       }

@@ -6,8 +6,21 @@ const { requireAuth } = require("../middleware/auth");
 
 const router = express.Router();
 
+function mustHaveJwtSecret() {
+  if (!process.env.JWT_SECRET) {
+    const err = new Error("Server misconfigured: JWT_SECRET is missing");
+    err.statusCode = 500;
+    throw err;
+  }
+}
+
 function sign(user) {
-  return jwt.sign({ id: user._id.toString(), email: user.email, role: user.role }, process.env.JWT_SECRET, { expiresIn: "7d" });
+  mustHaveJwtSecret();
+  return jwt.sign(
+    { id: user._id.toString(), email: user.email, role: user.role },
+    process.env.JWT_SECRET,
+    { expiresIn: "7d" }
+  );
 }
 
 router.post("/register", async (req, res, next) => {
@@ -15,13 +28,22 @@ router.post("/register", async (req, res, next) => {
     const { name, email, password } = req.body || {};
     if (!name || !email || !password) return res.status(400).json({ message: "Missing fields" });
 
-    const exists = await User.findOne({ email: String(email).toLowerCase().trim() });
+    const normalizedEmail = String(email).toLowerCase().trim();
+
+    const exists = await User.findOne({ email: normalizedEmail });
     if (exists) return res.status(400).json({ message: "Email already registered" });
 
     const passwordHash = await bcrypt.hash(String(password), 10);
-    const user = await User.create({ name: String(name).trim(), email: String(email).toLowerCase().trim(), passwordHash });
+    const user = await User.create({
+      name: String(name).trim(),
+      email: normalizedEmail,
+      passwordHash
+    });
 
-    return res.json({ message: "Registered", user: { id: user._id, name: user.name, email: user.email } });
+    return res.json({
+      message: "Registered",
+      user: { id: user._id, name: user.name, email: user.email }
+    });
   } catch (e) { next(e); }
 });
 
@@ -30,13 +52,31 @@ router.post("/login", async (req, res, next) => {
     const { email, password } = req.body || {};
     if (!email || !password) return res.status(400).json({ message: "Missing fields" });
 
-    const user = await User.findOne({ email: String(email).toLowerCase().trim() });
+    const normalizedEmail = String(email).toLowerCase().trim();
+
+    const user = await User.findOne({ email: normalizedEmail });
     if (!user) return res.status(401).json({ message: "Invalid credentials" });
 
-    const ok = await bcrypt.compare(String(password), user.passwordHash);
+    // Back-compat: some older DBs may have stored the hash under `password`
+    const hash = user.passwordHash || user.password;
+    if (!hash) {
+      return res.status(409).json({
+        message: "Account needs a password reset (missing password hash). Please re-register with a new email or ask admin to reset your password."
+      });
+    }
+
+    const ok = await bcrypt.compare(String(password), String(hash));
     if (!ok) return res.status(401).json({ message: "Invalid credentials" });
 
+    // If the account logged in via legacy `password`, persist into `passwordHash`
+    if (!user.passwordHash && user.password) {
+      user.passwordHash = String(user.password);
+      user.password = undefined;
+      await user.save().catch(() => {});
+    }
+
     const token = sign(user);
+
     return res.json({
       token,
       user: {
@@ -60,6 +100,5 @@ router.get("/me", requireAuth, async (req, res, next) => {
     res.json({ user });
   } catch (e) { next(e); }
 });
-
 
 module.exports = router;

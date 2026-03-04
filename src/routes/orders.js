@@ -5,11 +5,40 @@ const Listing = require("../models/Listing");
 
 const router = express.Router();
 
+// Health check / deployment test
 router.get("/__ping", (req, res) => {
   res.json({ ok: true, route: "orders", at: Date.now() });
 });
+
+/**
+ * Buyer releases contact/address to seller
+ * POST /api/orders/release-contact/:id
+ *
+ * NOTE: Using a static prefix avoids any Express route shadowing like `/:id`
+ */
+router.post("/release-contact/:id", requireAuth, async (req, res, next) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: "Order not found" });
+
+    // buyer only
+    if (String(order.buyer) !== String(req.user.id)) {
+      return res.status(403).json({ message: "Not allowed" });
+    }
+
+    order.contactReleased = true;
+    order.contactReleasedAt = new Date();
+    await order.save();
+
+    res.json({ ok: true });
+  } catch (e) {
+    next(e);
+  }
+});
+
 /**
  * Create order (buyer submits contact/address but it's locked by default)
+ * POST /api/orders
  */
 router.post("/", requireAuth, async (req, res, next) => {
   try {
@@ -19,6 +48,7 @@ router.post("/", requireAuth, async (req, res, next) => {
     const listing = await Listing.findById(listingId)
       .populate("owner", "_id name email")
       .lean();
+
     if (!listing) return res.status(404).json({ message: "Listing not found" });
 
     const sellerId = listing.owner?._id || listing.owner;
@@ -34,11 +64,11 @@ router.post("/", requireAuth, async (req, res, next) => {
       qty: Number(qty || 1),
       mode: mode || "item",
 
-      // stored, but NOT visible to seller unless released
+      // Stored, but NOT visible to seller unless released
       contact: contact || "",
       address: address || "",
 
-      // privacy gate (defaults false in schema, but explicit is fine)
+      // Privacy gate (defaults are in schema, but explicit is fine)
       contactReleased: false,
       contactReleasedAt: null,
 
@@ -54,6 +84,7 @@ router.post("/", requireAuth, async (req, res, next) => {
 
 /**
  * Buyer: see my orders (buyer can see their own contact/address)
+ * GET /api/orders/mine
  */
 router.get("/mine", requireAuth, async (req, res, next) => {
   try {
@@ -69,6 +100,7 @@ router.get("/mine", requireAuth, async (req, res, next) => {
 
 /**
  * Seller: see orders sold (contact/address hidden until buyer releases)
+ * GET /api/orders/sold
  */
 router.get("/sold", requireAuth, async (req, res, next) => {
   try {
@@ -79,7 +111,6 @@ router.get("/sold", requireAuth, async (req, res, next) => {
 
     const safe = items.map((o) => {
       if (!o.contactReleased) {
-        // ensure seller never receives buyer contact/address
         delete o.contact;
         delete o.address;
       }
@@ -87,30 +118,6 @@ router.get("/sold", requireAuth, async (req, res, next) => {
     });
 
     res.json(safe);
-  } catch (e) {
-    next(e);
-  }
-});
-
-/**
- * Buyer: release contact/address to seller for this order
- * POST /api/orders/:id/release-contact
- */
-router.post("/:id/release-contact", requireAuth, async (req, res, next) => {
-  try {
-    const order = await Order.findById(req.params.id);
-    if (!order) return res.status(404).json({ message: "Order not found" });
-
-    // buyer only
-    if (String(order.buyer) !== String(req.user.id)) {
-      return res.status(403).json({ message: "Not allowed" });
-    }
-
-    order.contactReleased = true;
-    order.contactReleasedAt = new Date();
-    await order.save();
-
-    res.json({ ok: true });
   } catch (e) {
     next(e);
   }

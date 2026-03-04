@@ -7,8 +7,15 @@ const OrderSchema = new mongoose.Schema({
 
   qty: { type: Number, default: 1 },
   mode: { type: String, default: "item" },
+
+  // Buyer-provided details (MUST NOT be shown to seller unless released)
   contact: { type: String, default: "" },
   address: { type: String, default: "" },
+
+  // Privacy gate (new)
+  contactReleased: { type: Boolean, default: false },
+  contactReleasedAt: { type: Date, default: null },
+
   notes: { type: String, default: "" },
 }, { timestamps: true });
 

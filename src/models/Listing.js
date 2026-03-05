@@ -19,6 +19,13 @@ const ListingSchema = new mongoose.Schema({
   images: { type: [String], default: [] },
   location: { type: String, default: "" },
 
+  // ✅ ===== FOOD / MARKET (NEW) =====
+  // This is what your frontend needs to show "View catalogue"
+  menuLink: { type: String, trim: true, default: "" },     // catalogue/menu URL
+  foodType: { type: String, trim: true, default: "" },     // restaurant | grocery (optional)
+  foodUnit: { type: String, trim: true, default: "" },     // e.g. "plate", "kg" (optional)
+  foodSpecial: { type: String, trim: true, default: "" },  // optional
+
   // ===== AUCTIONS =====
   auctionStart: { type: Date, default: null },
   auctionEnd: { type: Date, default: null },

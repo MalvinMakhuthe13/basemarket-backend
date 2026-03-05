@@ -28,6 +28,7 @@ router.get("/", async (req, res, next) => {
     const normalized = (items || []).map((it) => {
       if (it && typeof it === "object") {
         if (it.bidsCount == null && Array.isArray(it.bids)) it.bidsCount = it.bids.length;
+
         // mark ended status automatically for auctions (non-destructive)
         if (String(it.category || "").toLowerCase() === "auction" && it.auctionEnd) {
           const end = new Date(it.auctionEnd);
@@ -35,6 +36,12 @@ router.get("/", async (req, res, next) => {
             if (it.status !== "deleted" && it.status !== "sold") it.status = "ended";
           }
         }
+
+        // ✅ Ensure food fields exist so frontend logic doesn't break on older docs
+        if (it.menuLink == null) it.menuLink = "";
+        if (it.foodType == null) it.foodType = "";
+        if (it.foodUnit == null) it.foodUnit = "";
+        if (it.foodSpecial == null) it.foodSpecial = "";
       }
       return it;
     });
@@ -57,6 +64,12 @@ router.post("/", requireAuth, async (req, res, next) => {
     const startingBid = Number(b.startingBid || price || 0);
     const currentBid = Number(b.currentBid || startingBid || 0);
 
+    // ✅ FOOD fields (safe defaults)
+    const menuLink = String(b.menuLink || "").trim();
+    const foodType = String(b.foodType || "").trim();
+    const foodUnit = String(b.foodUnit || "").trim();
+    const foodSpecial = String(b.foodSpecial || "").trim();
+
     const doc = await Listing.create({
       owner: req.user.id,
       title: b.title || b.name || "",
@@ -65,8 +78,14 @@ router.post("/", requireAuth, async (req, res, next) => {
       price: price,
       currency: b.currency || "ZAR",
       category,
-      images: Array.isArray(b.images) ? b.images : b.image ? [b.image] : [],
+      images: Array.isArray(b.images) ? b.images : (b.image ? [b.image] : []),
       location: b.location || "",
+
+      // ✅ FOOD / MARKET
+      menuLink,
+      foodType,
+      foodUnit,
+      foodSpecial,
 
       // auction fields (ignored by non-auctions)
       auctionStart: category === "auction" ? auctionStart : null,
@@ -106,6 +125,12 @@ router.patch("/:id", requireAuth, async (req, res, next) => {
     if (b.location != null) item.location = String(b.location);
     if (Array.isArray(b.images)) item.images = b.images;
 
+    // ✅ FOOD updates
+    if (b.menuLink != null) item.menuLink = String(b.menuLink || "").trim();
+    if (b.foodType != null) item.foodType = String(b.foodType || "").trim();
+    if (b.foodUnit != null) item.foodUnit = String(b.foodUnit || "").trim();
+    if (b.foodSpecial != null) item.foodSpecial = String(b.foodSpecial || "").trim();
+
     // auction updates (only if listing is auction)
     const isAuction = String(item.category || "").toLowerCase() === "auction";
     if (isAuction) {
@@ -116,7 +141,10 @@ router.patch("/:id", requireAuth, async (req, res, next) => {
     }
 
     await item.save();
-    const populated = await Listing.findById(item._id).populate("owner", "name email verified seller phone").lean();
+    const populated = await Listing.findById(item._id)
+      .populate("owner", "name email verified seller phone")
+      .lean();
+
     res.json(populated);
   } catch (e) {
     next(e);

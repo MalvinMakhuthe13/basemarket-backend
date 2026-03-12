@@ -15,6 +15,7 @@ const orderRoutes = require("./src/routes/orders");
 const messageRoutes = require("./src/routes/messages");
 const verifyRoutes = require("./src/routes/verify");
 const adminRoutes = require("./src/routes/admin");
+const aiRoutes = require("./src/routes/ai");
 
 const app = express();
 
@@ -46,6 +47,7 @@ app.use("/api/orders", orderRoutes);
 app.use("/api/messages", messageRoutes);
 app.use("/api/verify", verifyRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/ai", aiRoutes);
 
 app.use(notFound);
 app.use(errorHandler);

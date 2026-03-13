@@ -104,7 +104,7 @@ router.post('/:id/activate-secure-deal', requireAuth, async (req, res, next) => 
     if (!order.secureDeal) return res.status(400).json({ message: 'This order is not a Secure Deal' });
     if (String(order.buyer) !== String(req.user.id)) return res.status(403).json({ message: 'Not allowed' });
     order.paymentStatus = 'paid';
-    order.escrowStatus = 'holding';
+    order.escrowStatus = 'awaiting_fulfilment';
     addTimeline(order, 'payment', 'Buyer confirmed payment. Funds are held by BaseMarket until completion.');
     await order.save();
     res.json({ ok: true, order });
@@ -130,14 +130,18 @@ router.post('/:id/mark-shipped', requireAuth, async (req, res, next) => {
 
 router.post('/:id/confirm-delivery', requireAuth, async (req, res, next) => {
   try {
+    const { releaseCode = '' } = req.body || {};
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
     if (!order.secureDeal) return res.status(400).json({ message: 'This order is not a Secure Deal' });
     if (String(order.buyer) !== String(req.user.id)) return res.status(403).json({ message: 'Not allowed' });
+    if (order.deliveryMethod === 'meetup' && order.releaseCode && String(releaseCode).trim() !== String(order.releaseCode).trim()) {
+      return res.status(400).json({ message: 'Incorrect meetup release code' });
+    }
     order.buyerConfirmedAt = new Date();
-    order.escrowStatus = 'delivered';
-    order.payoutStatus = 'ready';
-    addTimeline(order, 'delivery', 'Buyer confirmed delivery. Seller payout is now ready.');
+    order.escrowStatus = 'released';
+    order.payoutStatus = 'paid';
+    addTimeline(order, 'delivery', 'Buyer confirmed delivery. Seller payout has been released.');
     await order.save();
     res.json({ ok: true, order });
   } catch (e) { next(e); }

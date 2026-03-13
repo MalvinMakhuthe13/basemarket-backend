@@ -1,0 +1,112 @@
+const express = require("express");
+const crypto = require("crypto");
+const { requireAuth } = require("../middleware/auth");
+const Order = require("../models/Order");
+
+const router = express.Router();
+
+function urlEncode(str = "") {
+  return encodeURIComponent(String(str).trim()).replace(/%20/g, "+");
+}
+
+function buildSignature(data, passphrase = "") {
+  const filtered = Object.entries(data)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, value]) => `${key}=${urlEncode(value)}`);
+
+  if (passphrase) filtered.push(`passphrase=${urlEncode(passphrase)}`);
+  return crypto.createHash("md5").update(filtered.join("&")).digest("hex");
+}
+
+function addTimeline(order, type, message) {
+  order.timeline = Array.isArray(order.timeline) ? order.timeline : [];
+  order.timeline.push({ type, message, at: new Date() });
+}
+
+router.post("/create-payment", requireAuth, async (req, res) => {
+  try {
+    const { orderId } = req.body || {};
+    if (!orderId) return res.status(400).json({ message: "Missing orderId" });
+
+    const order = await Order.findById(orderId).populate("listing buyer seller");
+    if (!order) return res.status(404).json({ message: "Order not found" });
+    if (String(order.buyer?._id || order.buyer) !== String(req.user.id)) return res.status(403).json({ message: "Not allowed" });
+    if (!order.secureDeal) return res.status(400).json({ message: "PayFast checkout is only for Secure Deal orders" });
+    if (order.paymentStatus !== "awaiting_payment") return res.status(400).json({ message: "Order is not awaiting payment" });
+
+    const amount = Number(order.amount || 0).toFixed(2);
+    if (Number(amount) <= 0) return res.status(400).json({ message: "Order amount is invalid" });
+
+    const host = process.env.PAYFAST_HOST || "https://sandbox.payfast.co.za/eng/process";
+    const data = {
+      merchant_id: process.env.PAYFAST_MERCHANT_ID,
+      merchant_key: process.env.PAYFAST_MERCHANT_KEY,
+      return_url: process.env.PAYFAST_RETURN_URL,
+      cancel_url: process.env.PAYFAST_CANCEL_URL,
+      notify_url: process.env.PAYFAST_NOTIFY_URL,
+      name_first: req.user.name || order.buyer?.name || "Buyer",
+      email_address: req.user.email || order.buyer?.email || "",
+      m_payment_id: String(order._id),
+      amount,
+      item_name: order.listing?.title || "BaseMarket Order",
+      item_description: `BaseMarket secure deal for order ${order._id}`,
+      custom_str1: order.deliveryMethod || "shipping",
+      custom_str2: order.secureDeal ? "secure" : "direct",
+    };
+
+    const required = ["merchant_id", "merchant_key", "return_url", "cancel_url", "notify_url"];
+    const missing = required.filter((k) => !data[k]);
+    if (missing.length) return res.status(500).json({ message: `Missing PayFast configuration: ${missing.join(', ')}` });
+
+    order.gateway = "payfast";
+    order.gatewayReference = String(order._id);
+    addTimeline(order, "payment", "Buyer started secure payment checkout.");
+    await order.save();
+
+    const signature = buildSignature(data, process.env.PAYFAST_PASSPHRASE);
+    return res.json({ ok: true, host, fields: { ...data, signature } });
+  } catch (err) {
+    return res.status(500).json({ message: err.message || "Failed to create payment" });
+  }
+});
+
+router.post("/itn", express.urlencoded({ extended: false }), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const receivedSignature = body.signature || "";
+    const verificationData = { ...body };
+    delete verificationData.signature;
+
+    const expectedSignature = buildSignature(verificationData, process.env.PAYFAST_PASSPHRASE);
+    if (receivedSignature && receivedSignature !== expectedSignature) return res.status(400).send("Invalid signature");
+
+    const orderId = body.m_payment_id;
+    const paymentStatus = String(body.payment_status || "").toUpperCase();
+    const amountGross = Number(body.amount_gross || body.amount || 0);
+
+    const order = await Order.findById(orderId);
+    if (!order) return res.status(404).send("Order not found");
+
+    const orderAmount = Number(order.amount || 0);
+    if (Number(amountGross.toFixed(2)) !== Number(orderAmount.toFixed(2))) return res.status(400).send("Amount mismatch");
+
+    if (paymentStatus === "COMPLETE") {
+      order.paymentStatus = "paid";
+      order.escrowStatus = "holding";
+      order.gateway = "payfast";
+      order.gatewayReference = String(body.pf_payment_id || body.m_payment_id || order._id);
+      addTimeline(order, "payment", "Payment secured via PayFast. Funds are now being held until order completion.");
+      await order.save();
+    } else if (["FAILED", "CANCELLED"].includes(paymentStatus)) {
+      order.paymentStatus = paymentStatus === "FAILED" ? "failed" : "cancelled";
+      addTimeline(order, "payment", `Payment ${paymentStatus.toLowerCase()} on PayFast.`);
+      await order.save();
+    }
+
+    return res.status(200).send("OK");
+  } catch (err) {
+    return res.status(500).send("ITN error");
+  }
+});
+
+module.exports = router;

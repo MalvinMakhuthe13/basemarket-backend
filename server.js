@@ -6,6 +6,7 @@ const helmet = require("helmet");
 const morgan = require("morgan");
 const rateLimit = require("express-rate-limit");
 
+
 const { connectDB } = require("./src/config/db");
 const { notFound, errorHandler } = require("./src/middleware/error");
 
@@ -16,6 +17,7 @@ const messageRoutes = require("./src/routes/messages");
 const verifyRoutes = require("./src/routes/verify");
 const adminRoutes = require("./src/routes/admin");
 const aiRoutes = require("./src/routes/ai");
+const payfastRoutes = require("./src/routes/payfast");
 
 const app = express();
 
@@ -48,6 +50,7 @@ app.use("/api/messages", messageRoutes);
 app.use("/api/verify", verifyRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/ai", aiRoutes);
+app.use("/api/payfast", payfastRoutes);
 
 app.use(notFound);
 app.use(errorHandler);

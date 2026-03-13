@@ -20,7 +20,7 @@ router.get("/__ping", (req, res) => {
 
 router.post("/", requireAuth, async (req, res, next) => {
   try {
-    const { listingId, qty, mode, contact, address, notes, secureDeal, destinationCity, courier } = req.body || {};
+    const { listingId, qty, mode, contact, address, notes, secureDeal, destinationCity, courier, deliveryMethod } = req.body || {};
     if (!listingId) return res.status(400).json({ message: "Missing listingId" });
 
     const listing = await Listing.findById(listingId).populate("owner", "_id name email").lean();
@@ -32,13 +32,17 @@ router.post("/", requireAuth, async (req, res, next) => {
     }
 
     const isSecure = !!secureDeal;
-    const deliveryMethod = mode === 'ticket' ? 'digital' : ((address || destinationCity) ? 'shipping' : 'meetup');
+    const resolvedDeliveryMethod = mode === 'ticket' ? 'digital' : (deliveryMethod || ((address || destinationCity) ? 'shipping' : 'meetup'));
+    const unitPrice = Number(listing.price || 0);
+    const quantity = Math.max(1, Number(qty || 1));
+    const shippingFee = isSecure && resolvedDeliveryMethod === 'shipping' ? Number((courier && courier.price) || 0) : 0;
+    const amount = Number((unitPrice * quantity) + shippingFee);
 
     const order = await Order.create({
       listing: listing._id,
       buyer: req.user.id,
       seller: sellerId,
-      qty: Number(qty || 1),
+      qty: quantity,
       mode: mode || "item",
       contact: contact || "",
       address: address || "",
@@ -46,14 +50,19 @@ router.post("/", requireAuth, async (req, res, next) => {
       contactReleasedAt: null,
       notes: notes || "",
       secureDeal: isSecure,
-      paymentStatus: isSecure ? 'pending' : 'not_applicable',
-      escrowStatus: isSecure ? 'awaiting_payment' : 'open',
+      unitPrice,
+      shippingFee,
+      amount,
+      currency: listing.currency || 'ZAR',
+      paymentStatus: isSecure ? 'awaiting_payment' : 'not_applicable',
+      escrowStatus: isSecure ? 'holding_pending_payment' : 'open',
       payoutStatus: isSecure ? 'not_ready' : 'n/a',
-      deliveryMethod,
+      deliveryMethod: resolvedDeliveryMethod,
       destinationCity: destinationCity || '',
       courier: courier || null,
-      releaseCode: isSecure && deliveryMethod === 'meetup' ? makeReleaseCode() : '',
-      timeline: [{ type: 'created', message: isSecure ? 'Secure Deal created. Waiting for buyer payment confirmation.' : 'Order created.', at: new Date() }],
+      gateway: isSecure ? 'payfast' : '',
+      releaseCode: isSecure && resolvedDeliveryMethod === 'meetup' ? makeReleaseCode() : '',
+      timeline: [{ type: 'created', message: isSecure ? 'Secure Deal created. Waiting for secure payment confirmation.' : 'Order created.', at: new Date() }],
     });
 
     const full = await Order.findById(order._id).populate('listing').lean();
@@ -103,11 +112,7 @@ router.post('/:id/activate-secure-deal', requireAuth, async (req, res, next) => 
     if (!order) return res.status(404).json({ message: 'Order not found' });
     if (!order.secureDeal) return res.status(400).json({ message: 'This order is not a Secure Deal' });
     if (String(order.buyer) !== String(req.user.id)) return res.status(403).json({ message: 'Not allowed' });
-    order.paymentStatus = 'paid';
-    order.escrowStatus = 'awaiting_fulfilment';
-    addTimeline(order, 'payment', 'Buyer confirmed payment. Funds are held by BaseMarket until completion.');
-    await order.save();
-    res.json({ ok: true, order });
+    return res.status(400).json({ message: 'Direct buyer payment confirmation is disabled. Use the secure payment gateway.' });
   } catch (e) { next(e); }
 });
 
@@ -118,7 +123,7 @@ router.post('/:id/mark-shipped', requireAuth, async (req, res, next) => {
     if (!order) return res.status(404).json({ message: 'Order not found' });
     if (!order.secureDeal) return res.status(400).json({ message: 'This order is not a Secure Deal' });
     if (String(order.seller) !== String(req.user.id)) return res.status(403).json({ message: 'Not allowed' });
-    if (order.paymentStatus !== 'paid') return res.status(400).json({ message: 'Secure Deal has not been activated by buyer yet' });
+    if (order.paymentStatus !== 'paid') return res.status(400).json({ message: 'Secure Deal payment has not been confirmed yet' });
     order.trackingNumber = trackingNumber || order.trackingNumber;
     order.sellerMarkedShippedAt = new Date();
     order.escrowStatus = order.deliveryMethod === 'meetup' ? 'meetup_ready' : 'shipped';
@@ -140,8 +145,9 @@ router.post('/:id/confirm-delivery', requireAuth, async (req, res, next) => {
     }
     order.buyerConfirmedAt = new Date();
     order.escrowStatus = 'released';
-    order.payoutStatus = 'paid';
-    addTimeline(order, 'delivery', 'Buyer confirmed delivery. Seller payout has been released.');
+    order.payoutStatus = 'ready';
+    order.releasedAt = new Date();
+    addTimeline(order, 'delivery', 'Buyer confirmed delivery. Seller payout is now ready for release.');
     await order.save();
     res.json({ ok: true, order });
   } catch (e) { next(e); }
@@ -159,6 +165,19 @@ router.post('/:id/open-dispute', requireAuth, async (req, res, next) => {
     order.disputedAt = new Date();
     order.disputeReason = reason || order.disputeReason;
     addTimeline(order, 'dispute', `Dispute opened${reason ? `: ${reason}` : '.'}`);
+    await order.save();
+    res.json({ ok: true, order });
+  } catch (e) { next(e); }
+});
+
+
+router.post('/:id/mark-paid-out', requireAuth, async (req, res, next) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    if (req.user.role !== 'admin') return res.status(403).json({ message: 'Admin only' });
+    order.payoutStatus = 'paid';
+    addTimeline(order, 'payout', 'Seller payout marked as completed by admin.');
     await order.save();
     res.json({ ok: true, order });
   } catch (e) { next(e); }

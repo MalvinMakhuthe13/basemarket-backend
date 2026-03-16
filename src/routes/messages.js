@@ -96,7 +96,7 @@ router.get("/:id", requireAuth, async (req, res, next) => {
     if (!c) return res.status(404).json({ message: "Conversation not found" });
 
     const myId = req.user.id;
-    const allowed = String(c.buyer) === String(myId) || String(c.seller) === String(myId);
+    const allowed = String(c.buyer?._id || c.buyer) === String(myId) || String(c.seller?._id || c.seller) === String(myId);
     if (!allowed) return res.status(403).json({ message: "Not allowed" });
 
     const isBuyer = String(c.buyer?._id || c.buyer) === String(myId);

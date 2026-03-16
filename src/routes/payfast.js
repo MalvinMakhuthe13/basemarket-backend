@@ -2,10 +2,10 @@ const express = require("express");
 const crypto = require("crypto");
 const { requireAuth } = require("../middleware/auth");
 const Order = require("../models/Order");
+const Conversation = require("../models/Conversation");
 const FraudFlag = require('../models/FraudFlag');
 const { STATUS, deriveLegacyFields } = require('../utils/orderState');
 const { createNotification } = require('../utils/notifications');
-const Conversation = require('../models/Conversation');
 
 const router = express.Router();
 
@@ -21,20 +21,24 @@ function buildSignature(data, passphrase = "") {
   return crypto.createHash("md5").update(filtered.join("&")).digest("hex");
 }
 
-async function pushOrderConversationMessage(order, text, senderId = null) {
-  if (!order?.listing || !order?.buyer || !order?.seller || !text) return null;
-  let conv = await Conversation.findOne({ listing: order.listing, buyer: order.buyer, seller: order.seller, order: order._id });
-  if (!conv) conv = await Conversation.create({ listing: order.listing, buyer: order.buyer, seller: order.seller, order: order._id, messages: [] });
-  conv.messages.push({ sender: senderId || order.seller || order.buyer, text: String(text).trim() });
-  conv.lastMessage = String(text).trim();
-  conv.lastMessageAt = new Date();
-  await conv.save();
-  return conv;
-}
-
 function addTimeline(order, type, message) {
   order.timeline = Array.isArray(order.timeline) ? order.timeline : [];
   order.timeline.push({ type, message, at: new Date() });
+}
+
+async function appendOrderConversationMessage(order, text) {
+  try {
+    if (!order || !order.listing || !order.buyer || !order.seller || !text) return;
+    const listingId = order.listing._id || order.listing;
+    const buyerId = order.buyer._id || order.buyer;
+    const sellerId = order.seller._id || order.seller;
+    let conversation = await Conversation.findOne({ listing: listingId, buyer: buyerId, seller: sellerId, order: order._id });
+    if (!conversation) conversation = await Conversation.create({ listing: listingId, buyer: buyerId, seller: sellerId, order: order._id });
+    conversation.messages.push({ sender: sellerId, text: String(text).trim() });
+    conversation.lastMessage = String(text).trim();
+    conversation.lastMessageAt = new Date();
+    await conversation.save();
+  } catch (_) {}
 }
 
 router.post("/create-payment", requireAuth, async (req, res) => {
@@ -120,7 +124,7 @@ router.post("/itn", express.urlencoded({ extended: false }), async (req, res) =>
       deriveLegacyFields(order);
       addTimeline(order, "payment", "Payment secured via PayFast ITN. Funds are locked until order completion.");
       await order.save();
-      await pushOrderConversationMessage(order, 'Payment was secured successfully. Seller can now start fulfilment.', order.buyer).catch(()=>null);
+      await appendOrderConversationMessage(order, 'Payment secured. The seller can now confirm and fulfil the order.');
       await createNotification({ userId: order.seller, type: 'payment_received', title: 'Buyer payment confirmed', body: "The buyer's secure payment was confirmed. You can now confirm and fulfil the order.", actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'wallet', severity: 'success' }).catch(()=>null);
       await createNotification({ userId: order.buyer, type: 'payment_received', title: 'Payment secured', body: 'Your payment is confirmed and the seller can now prepare your order.', actionUrl: '/profile.html', actionLabel: 'Track order', icon: 'shield-check', severity: 'success' }).catch(()=>null);
     } else if (["FAILED", "CANCELLED"].includes(paymentStatus)) {

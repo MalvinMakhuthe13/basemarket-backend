@@ -41,6 +41,7 @@ const OrderSchema = new mongoose.Schema({
   destinationCity: { type: String, default: "" },
   courier: { type: mongoose.Schema.Types.Mixed, default: null },
   trackingNumber: { type: String, default: "" },
+  sellerPreparingAt: { type: Date, default: null },
   releaseCode: { type: String, default: "" },
   sellerMarkedShippedAt: { type: Date, default: null },
   buyerConfirmedAt: { type: Date, default: null },

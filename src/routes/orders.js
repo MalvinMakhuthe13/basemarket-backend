@@ -2,32 +2,11 @@ const express = require("express");
 const { requireAuth } = require("../middleware/auth");
 const Order = require("../models/Order");
 const Listing = require("../models/Listing");
+const Conversation = require("../models/Conversation");
 const FraudFlag = require('../models/FraudFlag');
 const { STATUS, assertTransition, deriveLegacyFields } = require('../utils/orderState');
 const { createNotification } = require('../utils/notifications');
 const { trackActivity } = require('../utils/activity');
-
-const Conversation = require("../models/Conversation");
-
-async function getOrCreateOrderConversation(order, listingId = null) {
-  const listing = listingId || order.listing;
-  if (!listing || !order.buyer || !order.seller) return null;
-  let conv = await Conversation.findOne({ listing, buyer: order.buyer, seller: order.seller, order: order._id });
-  if (!conv) conv = await Conversation.create({ listing, buyer: order.buyer, seller: order.seller, order: order._id, messages: [] });
-  return conv;
-}
-
-async function pushOrderConversationMessage(order, { senderId = null, text = '' } = {}) {
-  if (!text) return null;
-  const conv = await getOrCreateOrderConversation(order);
-  if (!conv) return null;
-  const sender = senderId || order.seller || order.buyer;
-  conv.messages.push({ sender, text: String(text).trim() });
-  conv.lastMessage = String(text).trim();
-  conv.lastMessageAt = new Date();
-  await conv.save();
-  return conv;
-}
 
 const router = express.Router();
 
@@ -43,6 +22,18 @@ function makeReleaseCode() {
 async function createFraudFlag(entityType, entityId, reason, severity = 'medium', metadata = {}) {
   try {
     await FraudFlag.create({ entityType, entityId: String(entityId), reason, severity, metadata, createdBy: 'system' });
+  } catch (_) {}
+}
+
+async function appendOrderConversationMessage(order, text) {
+  try {
+    if (!order || !order.listing || !order.buyer || !order.seller || !text) return;
+    let conversation = await Conversation.findOne({ listing: order.listing, buyer: order.buyer, seller: order.seller, order: order._id });
+    if (!conversation) conversation = await Conversation.create({ listing: order.listing, buyer: order.buyer, seller: order.seller, order: order._id });
+    conversation.messages.push({ sender: order.seller, text: String(text).trim() });
+    conversation.lastMessage = String(text).trim();
+    conversation.lastMessageAt = new Date();
+    await conversation.save();
   } catch (_) {}
 }
 
@@ -121,10 +112,9 @@ router.post("/", requireAuth, async (req, res, next) => {
 
     deriveLegacyFields(order);
     await order.save();
-    await getOrCreateOrderConversation(order, listing._id).catch(()=>null);
-    await pushOrderConversationMessage(order, { senderId: req.user.id, text: isSecure ? `Order opened for ${listing.title || listing.name || 'this item'}. Secure payment is now expected before fulfilment starts.` : `Order opened for ${listing.title || listing.name || 'this item'}.` }).catch(()=>null);
     await trackActivity({ userId: req.user.id, type: 'order_created', entityType: 'order', entityId: String(order._id), listingId: listing._id, meta: { amount, secureDeal: isSecure, deliveryMethod: resolvedDeliveryMethod } }).catch(()=>null);
     await createNotification({ userId: sellerId, type: 'order_created', title: 'New order received', body: `${listing.title || listing.name || 'A listing'} was ordered on BaseMarket.`, actionUrl: '/profile.html', actionLabel: 'View orders', icon: 'shopping-bag', severity: 'success' }).catch(()=>null);
+    await Conversation.findOneAndUpdate({ listing: listing._id, buyer: req.user.id, seller: sellerId, order: order._id }, { $setOnInsert: { listing: listing._id, buyer: req.user.id, seller: sellerId, order: order._id }, $set: { lastMessage: 'Order created', lastMessageAt: new Date() } }, { upsert: true, new: true }).catch(()=>null);
     await createNotification({ userId: req.user.id, type: 'order_created', title: 'Order created', body: `Your order for ${listing.title || listing.name || 'this listing'} is now open.`, actionUrl: '/profile.html', actionLabel: 'Track order', icon: 'shopping-bag', severity: 'info' }).catch(()=>null);
     res.json(await hydrate(order._id));
   } catch (e) { next(e); }
@@ -157,7 +147,6 @@ async function releaseContact(req, res, next) {
     order.contactReleasedAt = new Date();
     addTimeline(order, 'privacy', 'Buyer released contact details to seller.');
     await order.save();
-    await pushOrderConversationMessage(order, { senderId: order.buyer, text: 'Buyer released contact details for fulfilment.' }).catch(()=>null);
     await createNotification({ userId: order.seller, type: 'order_update', title: 'Buyer released contact details', body: 'You can now view the buyer contact details for fulfilment.', actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'unlock', severity: 'info' }).catch(()=>null);
     res.json({ ok: true });
   } catch (e) { next(e); }
@@ -176,9 +165,30 @@ router.post('/:id/mark-confirmed', requireAuth, async (req, res, next) => {
     deriveLegacyFields(order);
     addTimeline(order, 'order', 'Seller confirmed the order and is preparing fulfilment.');
     await order.save();
-    await pushOrderConversationMessage(order, { senderId: order.seller, text: 'Seller confirmed the order and is now preparing fulfilment.' }).catch(()=>null);
+    await appendOrderConversationMessage(order, 'Seller confirmed the order. The order is now moving into fulfilment.');
     await createNotification({ userId: order.buyer, type: 'order_update', title: 'Seller confirmed your order', body: 'Your order is now being prepared for fulfilment.', actionUrl: '/profile.html', actionLabel: 'Track order', icon: 'package-check', severity: 'success' }).catch(()=>null);
     await createNotification({ userId: order.seller, type: 'order_update', title: 'Order moved to fulfilment', body: 'This order is now confirmed and should be prepared for shipping, meetup, or delivery.', actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'package', severity: 'info' }).catch(()=>null);
+    res.json({ ok: true, order: await hydrate(order._id) });
+  } catch (e) { next(e); }
+});
+
+
+router.post('/:id/mark-preparing', requireAuth, async (req, res, next) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    if (String(order.seller) !== String(req.user.id)) return res.status(403).json({ message: 'Not allowed' });
+    if (order.secureDeal && order.paymentStatus !== 'paid') return res.status(400).json({ message: 'Payment must be confirmed first' });
+    if (![STATUS.PAID, STATUS.CONFIRMED].includes(order.status)) return res.status(400).json({ message: 'Order is not ready for preparing yet' });
+    if (order.status === STATUS.PAID) order.status = STATUS.CONFIRMED;
+    order.sellerPreparingAt = order.sellerPreparingAt || new Date();
+    deriveLegacyFields(order);
+    addTimeline(order, 'fulfilment', order.deliveryMethod === 'meetup' ? 'Seller started preparing the meetup handover.' : 'Seller started preparing the shipment.');
+    await order.save();
+    const updateText = order.deliveryMethod === 'meetup' ? 'Seller is now preparing your meetup handover.' : 'Seller is now preparing your shipment.';
+    await appendOrderConversationMessage(order, updateText);
+    await createNotification({ userId: order.buyer, type: 'order_update', title: 'Seller started preparing your order', body: updateText, actionUrl: '/profile.html', actionLabel: 'Track order', icon: 'box', severity: 'info' }).catch(()=>null);
+    await createNotification({ userId: order.seller, type: 'order_update', title: 'Preparing stage saved', body: 'The buyer can now see that you are preparing the order.', actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'box', severity: 'success' }).catch(()=>null);
     res.json({ ok: true, order: await hydrate(order._id) });
   } catch (e) { next(e); }
 });
@@ -201,6 +211,7 @@ router.post('/:id/mark-shipped', requireAuth, async (req, res, next) => {
     deriveLegacyFields(order);
     addTimeline(order, 'fulfilment', order.deliveryMethod === 'meetup' ? 'Seller marked the item ready for meetup and handover.' : `Seller marked the item shipped${trackingNumber ? ` (${trackingNumber})` : ''}.`);
     await order.save();
+    await appendOrderConversationMessage(order, order.deliveryMethod === 'meetup' ? 'Seller marked the order ready for meetup / handover.' : `Seller marked the order shipped${trackingNumber ? ` (${trackingNumber})` : ''}.`);
     await createNotification({ userId: order.buyer, type: 'order_update', title: order.deliveryMethod === 'meetup' ? 'Meetup order ready' : 'Order shipped', body: order.deliveryMethod === 'meetup' ? 'The seller marked your order ready for meetup / handover.' : 'Your seller marked the order as shipped.', actionUrl: '/profile.html', actionLabel: 'Track order', icon: 'truck', severity: 'info' }).catch(()=>null);
     await createNotification({ userId: order.seller, type: 'order_update', title: order.deliveryMethod === 'meetup' ? 'Meetup marked ready' : 'Shipment update saved', body: order.deliveryMethod === 'meetup' ? 'The order now waits for the buyer handover confirmation.' : 'The buyer has been notified that the order shipped.', actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'truck', severity: 'success' }).catch(()=>null);
     res.json({ ok: true, order: await hydrate(order._id) });
@@ -227,6 +238,7 @@ router.post('/:id/confirm-delivery', requireAuth, async (req, res, next) => {
     deriveLegacyFields(order);
     addTimeline(order, 'delivery', 'Buyer confirmed delivery. Seller payout is now ready for release.');
     await order.save();
+    await appendOrderConversationMessage(order, 'Buyer confirmed delivery. The order is now complete and the seller payout is ready.');
     await createNotification({ userId: order.seller, type: 'order_update', title: 'Buyer confirmed delivery', body: 'Your order is completed and payout is now ready for release.', actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'badge-check', severity: 'success' }).catch(()=>null);
     await createNotification({ userId: order.buyer, type: 'order_update', title: 'Order completed', body: 'Thanks for confirming delivery. Your order is now complete.', actionUrl: '/profile.html', actionLabel: 'View order', icon: 'check-circle', severity: 'success' }).catch(()=>null);
     res.json({ ok: true, order: await hydrate(order._id) });
@@ -280,6 +292,7 @@ router.post('/:id/mark-paid-out', requireAuth, async (req, res, next) => {
     order.payoutStatus = 'paid';
     addTimeline(order, 'payout', 'Seller payout marked as completed by admin.');
     await order.save();
+    await appendOrderConversationMessage(order, 'Admin marked the seller payout as paid.');
     await createNotification({ userId: order.seller, type: 'payout_update', title: 'Seller payout marked paid', body: 'Admin marked the seller payout as completed.', actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'wallet', severity: 'success' }).catch(()=>null);
     res.json({ ok: true, order: await hydrate(order._id) });
   } catch (e) { next(e); }
@@ -300,7 +313,7 @@ router.post('/:id/mark-delivered', requireAuth, async (req, res, next) => {
     deriveLegacyFields(order);
     addTimeline(order, 'fulfilment', order.deliveryMethod === 'meetup' ? 'Seller marked the meetup handover complete.' : 'Seller marked the shipment delivered / handed over.');
     await order.save();
-    await pushOrderConversationMessage(order, { senderId: order.seller, text: order.deliveryMethod === 'meetup' ? 'Seller marked the handover as completed.' : 'Seller marked the order as delivered / handed over.' }).catch(()=>null);
+    await appendOrderConversationMessage(order, order.deliveryMethod === 'meetup' ? 'Seller marked the meetup handover complete.' : 'Seller marked the order delivered / handed over.');
     await createNotification({ userId: order.buyer, type: 'order_update', title: 'Seller marked the order delivered', body: 'Please confirm delivery if everything is correct.', actionUrl: '/profile.html', actionLabel: 'Track order', icon: 'package-check', severity: 'info' }).catch(()=>null);
     await createNotification({ userId: order.seller, type: 'order_update', title: 'Delivery stage recorded', body: 'The order has moved to delivered and now waits for buyer confirmation.', actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'package-check', severity: 'success' }).catch(()=>null);
     res.json({ ok: true, order: await hydrate(order._id) });

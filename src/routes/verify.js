@@ -1,5 +1,5 @@
 const express = require("express");
-const crypto = require("crypto");
+const { nanoid } = require("nanoid");
 const { requireAuth } = require("../middleware/auth");
 const User = require("../models/User");
 const ManualCode = require("../models/ManualCode");
@@ -7,15 +7,10 @@ const EmailVerifyToken = require("../models/EmailVerifyToken");
 
 const router = express.Router();
 
-function makeToken(size = 32) {
-  return crypto.randomBytes(size).toString("hex").slice(0, size);
-}
-
-
 // Email verification (simple: generate token; you can email the link yourself)
 router.post("/email/start", requireAuth, async (req, res, next) => {
   try {
-    const token = makeToken(32);
+    const token = nanoid(32);
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24); // 24h
     await EmailVerifyToken.create({ user: req.user.id, token, expiresAt });
 
@@ -69,14 +64,6 @@ router.post("/manual/redeem", requireAuth, async (req, res, next) => {
 
     const user = await User.findById(req.user.id).lean();
     res.json({ message: "Verified", verified: true, user: { id: user._id, email: user.email, verified: user.verified } });
-  } catch (e) { next(e); }
-});
-
-router.get("/me", requireAuth, async (req, res, next) => {
-  try {
-    const user = await User.findById(req.user.id).select("-passwordHash").lean();
-    if (!user) return res.status(404).json({ message: "User not found" });
-    res.json({ user });
   } catch (e) { next(e); }
 });
 

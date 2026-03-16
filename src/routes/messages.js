@@ -13,21 +13,35 @@ router.get("/", requireAuth, async (req, res, next) => {
   try {
     const myId = req.user.id;
     const convs = await Conversation.find({ $or: [{ buyer: myId }, { seller: myId }] })
-      .populate("listing", "title name")
-      .populate('order', 'status amount deliveryMethod')
+      .populate("listing", "title name price currency images")
+      .populate('order', 'status amount deliveryMethod paymentStatus escrowStatus payoutStatus trackingNumber')
+      .populate('buyer', 'name email')
+      .populate('seller', 'name email')
       .sort({ updatedAt: -1 })
       .lean();
 
-    const out = convs.map(c => ({
-      _id: c._id,
-      listingId: c.listing?._id || c.listing,
-      listingTitle: pickListingTitle(c.listing),
-      orderId: c.order?._id || c.order || null,
-      orderStatus: c.order?.status || null,
-      lastMessage: c.lastMessage || "",
-      lastMessageAt: c.lastMessageAt || c.updatedAt,
-      updatedAt: c.updatedAt,
-    }));
+    const out = convs.map(c => {
+      const isBuyer = String(c.buyer?._id || c.buyer) === String(myId);
+      const otherParty = isBuyer ? c.seller : c.buyer;
+      return {
+        _id: c._id,
+        listingId: c.listing?._id || c.listing,
+        listingTitle: pickListingTitle(c.listing),
+        listingImage: Array.isArray(c.listing?.images) && c.listing.images[0] ? c.listing.images[0] : '',
+        orderId: c.order?._id || c.order || null,
+        orderStatus: c.order?.status || null,
+        paymentStatus: c.order?.paymentStatus || null,
+        escrowStatus: c.order?.escrowStatus || null,
+        payoutStatus: c.order?.payoutStatus || null,
+        deliveryMethod: c.order?.deliveryMethod || null,
+        trackingNumber: c.order?.trackingNumber || '',
+        otherPartyName: otherParty?.name || otherParty?.email || 'Marketplace user',
+        lastMessage: c.lastMessage || "",
+        lastMessageAt: c.lastMessageAt || c.updatedAt,
+        messageCount: Array.isArray(c.messages) ? c.messages.length : 0,
+        updatedAt: c.updatedAt,
+      };
+    });
 
     res.json({ conversations: out });
   } catch (e) { next(e); }
@@ -74,7 +88,10 @@ router.get("/:id", requireAuth, async (req, res, next) => {
   try {
     const c = await Conversation.findById(req.params.id)
       .populate("messages.sender", "name email")
-      .populate('order', 'status amount deliveryMethod')
+      .populate('order', 'status amount deliveryMethod paymentStatus escrowStatus payoutStatus trackingNumber timeline')
+      .populate('buyer', 'name email')
+      .populate('seller', 'name email')
+      .populate('listing', 'title name')
       .lean();
     if (!c) return res.status(404).json({ message: "Conversation not found" });
 
@@ -82,7 +99,9 @@ router.get("/:id", requireAuth, async (req, res, next) => {
     const allowed = String(c.buyer) === String(myId) || String(c.seller) === String(myId);
     if (!allowed) return res.status(403).json({ message: "Not allowed" });
 
-    res.json({ messages: c.messages || [], order: c.order || null });
+    const isBuyer = String(c.buyer?._id || c.buyer) === String(myId);
+    const otherParty = isBuyer ? c.seller : c.buyer;
+    res.json({ messages: c.messages || [], order: c.order || null, listingTitle: pickListingTitle(c.listing), otherPartyName: otherParty?.name || otherParty?.email || 'Marketplace user' });
   } catch (e) { next(e); }
 });
 

@@ -122,4 +122,39 @@ router.post("/:id", requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+
+
+router.delete('/:id/message/:messageId', requireAuth, async (req, res, next) => {
+  try {
+    const conv = await Conversation.findById(req.params.id);
+    if (!conv) return res.status(404).json({ message: 'Conversation not found' });
+    const myId = String(req.user.id);
+    const allowed = String(conv.buyer) == myId || String(conv.seller) == myId || req.user.role === 'admin';
+    if (!allowed) return res.status(403).json({ message: 'Not allowed' });
+    const idx = (conv.messages || []).findIndex((m) => String(m._id) === String(req.params.messageId));
+    if (idx === -1) return res.status(404).json({ message: 'Message not found' });
+    const msg = conv.messages[idx];
+    const canDelete = req.user.role === 'admin' || String(msg.sender) === myId;
+    if (!canDelete) return res.status(403).json({ message: 'You can only delete your own messages' });
+    conv.messages.splice(idx, 1);
+    const last = conv.messages[conv.messages.length - 1];
+    conv.lastMessage = last ? String(last.text || '').trim() : '';
+    conv.lastMessageAt = last ? (last.createdAt || new Date()) : null;
+    await conv.save();
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+router.delete('/:id', requireAuth, async (req, res, next) => {
+  try {
+    const conv = await Conversation.findById(req.params.id);
+    if (!conv) return res.status(404).json({ message: 'Conversation not found' });
+    const myId = String(req.user.id);
+    const allowed = String(conv.buyer) == myId || String(conv.seller) == myId || req.user.role === 'admin';
+    if (!allowed) return res.status(403).json({ message: 'Not allowed' });
+    await conv.deleteOne();
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
 module.exports = router;

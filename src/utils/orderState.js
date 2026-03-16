@@ -47,7 +47,7 @@ function deriveLegacyFields(order) {
       break;
     case STATUS.CONFIRMED:
       order.paymentStatus = order.secureDeal ? 'paid' : order.paymentStatus;
-      order.escrowStatus = order.secureDeal ? 'awaiting_fulfilment' : order.escrowStatus;
+      order.escrowStatus = order.deliveryMethod === 'meetup' ? 'meetup_ready' : 'awaiting_fulfilment';
       break;
     case STATUS.SHIPPED:
       order.paymentStatus = order.secureDeal ? 'paid' : order.paymentStatus;

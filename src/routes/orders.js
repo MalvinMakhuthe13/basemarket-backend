@@ -219,12 +219,12 @@ router.post('/:id/mark-shipped', requireAuth, async (req, res, next) => {
       order.status = STATUS.CONFIRMED;
       addTimeline(order, 'order', 'Seller confirmed the order.');
     }
-    assertTransition(order.status, STATUS.SHIPPED);
+    assertTransition(order.status, order.deliveryMethod === 'meetup' ? STATUS.DELIVERED : STATUS.SHIPPED);
     order.trackingNumber = trackingNumber || order.trackingNumber;
     order.sellerMarkedShippedAt = new Date();
-    order.status = STATUS.SHIPPED;
+    order.status = order.deliveryMethod === 'meetup' ? STATUS.DELIVERED : STATUS.SHIPPED;
     deriveLegacyFields(order);
-    addTimeline(order, 'fulfilment', order.deliveryMethod === 'meetup' ? 'Seller marked the item ready for meetup / handover.' : `Seller marked the item shipped${trackingNumber ? ` (${trackingNumber})` : ''}.`);
+    addTimeline(order, 'fulfilment', order.deliveryMethod === 'meetup' ? 'Seller marked the item ready for meetup and handover.' : `Seller marked the item shipped${trackingNumber ? ` (${trackingNumber})` : ''}.`);
     await order.save();
     await appendOrderConversationMessage(order, order.deliveryMethod === 'meetup' ? 'Seller marked the order ready for meetup / handover.' : `Seller marked the order shipped${trackingNumber ? ` (${trackingNumber})` : ''}.`);
     await createNotification({ userId: order.buyer, type: 'order_update', title: order.deliveryMethod === 'meetup' ? 'Meetup order ready' : 'Order shipped', body: order.deliveryMethod === 'meetup' ? 'The seller marked your order ready for meetup / handover.' : 'Your seller marked the order as shipped.', actionUrl: '/profile.html', actionLabel: 'Track order', icon: 'truck', severity: 'info' }).catch(()=>null);
@@ -332,6 +332,29 @@ router.post('/:id/mark-delivered', requireAuth, async (req, res, next) => {
     await createNotification({ userId: order.buyer, type: 'order_update', title: 'Seller marked the order delivered', body: 'Please confirm delivery if everything is correct.', actionUrl: '/profile.html', actionLabel: 'Track order', icon: 'package-check', severity: 'info' }).catch(()=>null);
     await createNotification({ userId: order.seller, type: 'order_update', title: 'Delivery stage recorded', body: 'The order has moved to delivered and now waits for buyer confirmation.', actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'package-check', severity: 'success' }).catch(()=>null);
     res.json({ ok: true, order: await hydrate(order._id) });
+  } catch (e) { next(e); }
+});
+
+
+
+router.delete('/:id', requireAuth, async (req, res, next) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    const myId = String(req.user.id);
+    const allowed = String(order.buyer) === myId || String(order.seller) === myId || req.user.role === 'admin';
+    if (!allowed) return res.status(403).json({ message: 'Not allowed' });
+
+    const status = String(order.status || '').toLowerCase();
+    const payment = String(order.paymentStatus || '').toLowerCase();
+    const deletable = ['created','cancelled','completed','refunded'].includes(status) || (order.secureDeal && status === 'created' && payment !== 'paid');
+    if (!deletable && req.user.role !== 'admin') {
+      return res.status(400).json({ message: 'Only unpaid or finished orders can be deleted' });
+    }
+
+    await Conversation.deleteMany({ order: order._id }).catch(()=>null);
+    await order.deleteOne();
+    res.json({ ok: true });
   } catch (e) { next(e); }
 });
 

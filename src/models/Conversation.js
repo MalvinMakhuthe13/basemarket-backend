@@ -7,6 +7,7 @@ const MessageSchema = new mongoose.Schema({
 
 const ConversationSchema = new mongoose.Schema({
   listing: { type: mongoose.Schema.Types.ObjectId, ref: "Listing", required: true },
+  order: { type: mongoose.Schema.Types.ObjectId, ref: "Order", default: null },
   buyer: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
   seller: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
   messages: { type: [MessageSchema], default: [] },
@@ -14,6 +15,6 @@ const ConversationSchema = new mongoose.Schema({
   lastMessageAt: { type: Date },
 }, { timestamps: true });
 
-ConversationSchema.index({ listing: 1, buyer: 1, seller: 1 }, { unique: true });
+ConversationSchema.index({ listing: 1, buyer: 1, seller: 1, order: 1 }, { unique: true });
 
 module.exports = mongoose.model("Conversation", ConversationSchema);

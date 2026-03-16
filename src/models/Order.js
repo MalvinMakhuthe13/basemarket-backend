@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { STATUS } = require('../utils/orderState');
 
 const OrderTimelineSchema = new mongoose.Schema({
   type: { type: String, default: "note" },
@@ -13,6 +14,12 @@ const OrderSchema = new mongoose.Schema({
 
   qty: { type: Number, default: 1 },
   mode: { type: String, default: "item" },
+  status: {
+    type: String,
+    enum: Object.values(STATUS),
+    default: STATUS.CREATED,
+    index: true,
+  },
 
   contact: { type: String, default: "" },
   address: { type: String, default: "" },
@@ -40,6 +47,9 @@ const OrderSchema = new mongoose.Schema({
   releasedAt: { type: Date, default: null },
   disputedAt: { type: Date, default: null },
   disputeReason: { type: String, default: "" },
+  paymentLockedAt: { type: Date, default: null },
+  payfastItnVerified: { type: Boolean, default: false },
+  lastPayfastPayload: { type: mongoose.Schema.Types.Mixed, default: null },
   timeline: { type: [OrderTimelineSchema], default: [] },
 }, { timestamps: true });
 

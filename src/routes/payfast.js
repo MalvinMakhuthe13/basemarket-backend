@@ -2,6 +2,8 @@ const express = require("express");
 const crypto = require("crypto");
 const { requireAuth } = require("../middleware/auth");
 const Order = require("../models/Order");
+const FraudFlag = require('../models/FraudFlag');
+const { STATUS, deriveLegacyFields } = require('../utils/orderState');
 
 const router = express.Router();
 
@@ -13,7 +15,6 @@ function buildSignature(data, passphrase = "") {
   const filtered = Object.entries(data)
     .filter(([, value]) => value !== undefined && value !== null && value !== "")
     .map(([key, value]) => `${key}=${urlEncode(value)}`);
-
   if (passphrase) filtered.push(`passphrase=${urlEncode(passphrase)}`);
   return crypto.createHash("md5").update(filtered.join("&")).digest("hex");
 }
@@ -78,33 +79,44 @@ router.post("/itn", express.urlencoded({ extended: false }), async (req, res) =>
     delete verificationData.signature;
 
     const expectedSignature = buildSignature(verificationData, process.env.PAYFAST_PASSPHRASE);
-    if (receivedSignature && receivedSignature !== expectedSignature) return res.status(400).send("Invalid signature");
+    if (receivedSignature && receivedSignature !== expectedSignature) {
+      await FraudFlag.create({ entityType: 'payment', entityId: String(body.m_payment_id || 'unknown'), reason: 'Invalid PayFast signature received', severity: 'high', metadata: body, createdBy: 'payfast-itn' });
+      return res.status(400).send("Invalid signature");
+    }
 
     const orderId = body.m_payment_id;
     const paymentStatus = String(body.payment_status || "").toUpperCase();
     const amountGross = Number(body.amount_gross || body.amount || 0);
-
     const order = await Order.findById(orderId);
     if (!order) return res.status(404).send("Order not found");
 
+    order.lastPayfastPayload = body;
     const orderAmount = Number(order.amount || 0);
-    if (Number(amountGross.toFixed(2)) !== Number(orderAmount.toFixed(2))) return res.status(400).send("Amount mismatch");
+    if (Number(amountGross.toFixed(2)) !== Number(orderAmount.toFixed(2))) {
+      await FraudFlag.create({ entityType: 'payment', entityId: String(order._id), reason: 'PayFast amount mismatch', severity: 'high', metadata: { amountGross, orderAmount, body }, createdBy: 'payfast-itn' });
+      return res.status(400).send("Amount mismatch");
+    }
 
     if (paymentStatus === "COMPLETE") {
-      order.paymentStatus = "paid";
-      order.escrowStatus = "holding";
+      if (order.paymentLockedAt) return res.status(200).send('OK');
+      order.paymentLockedAt = new Date();
+      order.payfastItnVerified = true;
       order.gateway = "payfast";
       order.gatewayReference = String(body.pf_payment_id || body.m_payment_id || order._id);
-      addTimeline(order, "payment", "Payment secured via PayFast. Funds are now being held until order completion.");
+      if (order.status === STATUS.CREATED) order.status = STATUS.PAID;
+      deriveLegacyFields(order);
+      addTimeline(order, "payment", "Payment secured via PayFast ITN. Funds are locked until order completion.");
       await order.save();
     } else if (["FAILED", "CANCELLED"].includes(paymentStatus)) {
       order.paymentStatus = paymentStatus === "FAILED" ? "failed" : "cancelled";
+      if (order.status === STATUS.CREATED) order.status = STATUS.CANCELLED;
+      deriveLegacyFields(order);
       addTimeline(order, "payment", `Payment ${paymentStatus.toLowerCase()} on PayFast.`);
       await order.save();
     }
 
     return res.status(200).send("OK");
-  } catch (err) {
+  } catch (_err) {
     return res.status(500).send("ITN error");
   }
 });

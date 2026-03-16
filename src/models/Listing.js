@@ -8,25 +8,24 @@ const BidSchema = new mongoose.Schema({
 
 const ListingSchema = new mongoose.Schema({
   owner: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-
-  // flexible fields so your current frontend keeps working
   title: { type: String, trim: true, default: "" },
   name: { type: String, trim: true, default: "" },
   description: { type: String, trim: true, default: "" },
-  price: { type: Number, default: 0 },               // used for "sell" price or auction starting bid
+  price: { type: Number, default: 0 },
   currency: { type: String, default: "ZAR" },
-  category: { type: String, default: "sell" },       // sell | request | auction | etc.
+  category: { type: String, default: "sell" },
   images: { type: [String], default: [] },
   location: { type: String, default: "" },
+  deliveryType: { type: String, enum: ['meetup','delivery','both','digital'], default: 'both' },
+  allowOffers: { type: Boolean, default: true },
+  allowTrade: { type: Boolean, default: false },
+  allowBundles: { type: Boolean, default: false },
 
-  // ✅ ===== FOOD / MARKET (NEW) =====
-  // This is what your frontend needs to show "View catalogue"
-  menuLink: { type: String, trim: true, default: "" },     // catalogue/menu URL
-  foodType: { type: String, trim: true, default: "" },     // restaurant | grocery (optional)
-  foodUnit: { type: String, trim: true, default: "" },     // e.g. "plate", "kg" (optional)
-  foodSpecial: { type: String, trim: true, default: "" },  // optional
+  menuLink: { type: String, trim: true, default: "" },
+  foodType: { type: String, trim: true, default: "" },
+  foodUnit: { type: String, trim: true, default: "" },
+  foodSpecial: { type: String, trim: true, default: "" },
 
-  // ===== AUCTIONS =====
   auctionStart: { type: Date, default: null },
   auctionEnd: { type: Date, default: null },
   startingBid: { type: Number, default: 0 },
@@ -34,14 +33,14 @@ const ListingSchema = new mongoose.Schema({
   bids: { type: [BidSchema], default: [] },
   bidsCount: { type: Number, default: 0 },
 
-  // keep listing visible after auction ends; UI decides "Ended" based on auctionEnd
-  status: { type: String, enum: ["active", "ended", "sold", "deleted"], default: "active" },
+  status: { type: String, enum: ["active", "ended", "sold", "deleted", 'paused'], default: "active" },
 }, { timestamps: true });
 
-// keep bidsCount in sync
 ListingSchema.pre("save", function(next) {
   try {
     if (Array.isArray(this.bids)) this.bidsCount = this.bids.length;
+    if (!this.title && this.name) this.title = this.name;
+    if (!this.name && this.title) this.name = this.title;
   } catch (_) {}
   next();
 });

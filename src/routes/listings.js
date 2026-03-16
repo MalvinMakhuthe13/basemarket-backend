@@ -1,8 +1,29 @@
 const express = require("express");
+const fs = require('fs');
+const path = require('path');
+const multer = require('multer');
 const Listing = require("../models/Listing");
 const { requireAuth } = require("../middleware/auth");
 
 const router = express.Router();
+const uploadDir = path.join(process.cwd(), 'uploads', 'listings');
+fs.mkdirSync(uploadDir, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, uploadDir),
+  filename: (_req, file, cb) => {
+    const safeExt = path.extname(file.originalname || '').toLowerCase() || '.jpg';
+    cb(null, `${Date.now()}-${Math.round(Math.random()*1e9)}${safeExt}`);
+  }
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 6 * 1024 * 1024, files: 6 },
+  fileFilter: (_req, file, cb) => {
+    if (!file.mimetype.startsWith('image/')) return cb(new Error('Only image uploads are allowed'));
+    cb(null, true);
+  }
+});
 
 function asDate(v) {
   if (!v) return null;
@@ -10,38 +31,79 @@ function asDate(v) {
   return Number.isFinite(d.getTime()) ? d : null;
 }
 
+function toPublicImageUrls(req, files = []) {
+  const base = `${req.protocol}://${req.get('host')}`;
+  return files.map((file) => `${base}/uploads/listings/${file.filename}`);
+}
+
+function normalizeListingInput(b = {}) {
+  const category = String(b.category || "sell").toLowerCase().trim();
+  const auctionStart = asDate(b.auctionStart);
+  const auctionEnd = asDate(b.auctionEnd);
+  const price = Number(b.price || 0);
+  const startingBid = Number(b.startingBid || price || 0);
+  const currentBid = Number(b.currentBid || startingBid || 0);
+  const menuLink = String(b.menuLink || "").trim();
+  const foodType = String(b.foodType || "").trim();
+  const foodUnit = String(b.foodUnit || "").trim();
+  const foodSpecial = String(b.foodSpecial || "").trim();
+  const requestedDelivery = String(b.deliveryType || '').toLowerCase();
+  const deliveryType = ['meetup','delivery','both','digital'].includes(requestedDelivery)
+    ? requestedDelivery
+    : (category === 'events' || category === 'jobs' ? 'digital' : 'both');
+
+  return {
+    title: b.title || b.name || "",
+    name: b.name || b.title || "",
+    description: b.description || "",
+    price,
+    currency: b.currency || "ZAR",
+    category,
+    location: b.location || "",
+    menuLink,
+    foodType,
+    foodUnit,
+    foodSpecial,
+    auctionStart: category === "auction" ? auctionStart : null,
+    auctionEnd: category === "auction" ? auctionEnd : null,
+    startingBid: category === "auction" ? startingBid : 0,
+    currentBid: category === "auction" ? currentBid : 0,
+    bids: [],
+    bidsCount: 0,
+    status: "active",
+    deliveryType,
+    allowOffers: b.allowOffers !== false,
+    allowTrade: !!b.allowTrade,
+    allowBundles: !!b.allowBundles,
+  };
+}
+
 router.get("/", async (req, res, next) => {
   try {
-    // Keep auctions visible after they end (so the UI can show "Ended")
-    // Only hide deleted items.
     const items = await Listing.find({
       $or: [
         { status: { $ne: "deleted" } },
-        { status: { $exists: false } }, // older docs with no status field
+        { status: { $exists: false } },
       ],
     })
-      .populate("owner", "name email verified seller phone")
+      .populate("owner", "name email verified seller phone role")
       .sort({ createdAt: -1 })
       .lean();
 
-    // Defensive: ensure bidsCount is present even for older auction docs
     const normalized = (items || []).map((it) => {
       if (it && typeof it === "object") {
         if (it.bidsCount == null && Array.isArray(it.bids)) it.bidsCount = it.bids.length;
-
-        // mark ended status automatically for auctions (non-destructive)
         if (String(it.category || "").toLowerCase() === "auction" && it.auctionEnd) {
           const end = new Date(it.auctionEnd);
           if (Number.isFinite(end.getTime()) && Date.now() > end.getTime()) {
             if (it.status !== "deleted" && it.status !== "sold") it.status = "ended";
           }
         }
-
-        // ✅ Ensure food fields exist so frontend logic doesn't break on older docs
         if (it.menuLink == null) it.menuLink = "";
         if (it.foodType == null) it.foodType = "";
         if (it.foodUnit == null) it.foodUnit = "";
         if (it.foodSpecial == null) it.foodSpecial = "";
+        if (!it.deliveryType) it.deliveryType = 'both';
       }
       return it;
     });
@@ -52,50 +114,18 @@ router.get("/", async (req, res, next) => {
   }
 });
 
+router.post('/upload', requireAuth, upload.array('images', 6), async (req, res) => {
+  res.json({ ok: true, images: toPublicImageUrls(req, req.files || []) });
+});
+
 router.post("/", requireAuth, async (req, res, next) => {
   try {
     const b = req.body || {};
-    const category = String(b.category || "sell").toLowerCase().trim();
-
-    const auctionStart = asDate(b.auctionStart);
-    const auctionEnd = asDate(b.auctionEnd);
-
-    const price = Number(b.price || 0);
-    const startingBid = Number(b.startingBid || price || 0);
-    const currentBid = Number(b.currentBid || startingBid || 0);
-
-    // ✅ FOOD fields (safe defaults)
-    const menuLink = String(b.menuLink || "").trim();
-    const foodType = String(b.foodType || "").trim();
-    const foodUnit = String(b.foodUnit || "").trim();
-    const foodSpecial = String(b.foodSpecial || "").trim();
-
+    const input = normalizeListingInput(b);
     const doc = await Listing.create({
       owner: req.user.id,
-      title: b.title || b.name || "",
-      name: b.name || b.title || "",
-      description: b.description || "",
-      price: price,
-      currency: b.currency || "ZAR",
-      category,
+      ...input,
       images: Array.isArray(b.images) ? b.images : (b.image ? [b.image] : []),
-      location: b.location || "",
-
-      // ✅ FOOD / MARKET
-      menuLink,
-      foodType,
-      foodUnit,
-      foodSpecial,
-
-      // auction fields (ignored by non-auctions)
-      auctionStart: category === "auction" ? auctionStart : null,
-      auctionEnd: category === "auction" ? auctionEnd : null,
-      startingBid: category === "auction" ? startingBid : 0,
-      currentBid: category === "auction" ? currentBid : 0,
-      bids: [],
-      bidsCount: 0,
-
-      status: "active",
     });
 
     const populated = await Listing.findById(doc._id)
@@ -108,30 +138,29 @@ router.post("/", requireAuth, async (req, res, next) => {
   }
 });
 
-// PATCH listing (owner only) - supports the frontend fallback / last resort updates
 router.patch("/:id", requireAuth, async (req, res, next) => {
   try {
     const item = await Listing.findById(req.params.id);
     if (!item) return res.status(404).json({ message: "Listing not found" });
-    if (String(item.owner) !== String(req.user.id)) return res.status(403).json({ message: "Not allowed" });
+    if (String(item.owner) !== String(req.user.id) && req.user.role !== 'admin') return res.status(403).json({ message: "Not allowed" });
 
     const b = req.body || {};
-
-    // allow safe updates
     if (b.title != null) item.title = String(b.title);
     if (b.name != null) item.name = String(b.name);
     if (b.description != null) item.description = String(b.description);
     if (b.price != null) item.price = Number(b.price || 0);
     if (b.location != null) item.location = String(b.location);
     if (Array.isArray(b.images)) item.images = b.images;
-
-    // ✅ FOOD updates
     if (b.menuLink != null) item.menuLink = String(b.menuLink || "").trim();
     if (b.foodType != null) item.foodType = String(b.foodType || "").trim();
     if (b.foodUnit != null) item.foodUnit = String(b.foodUnit || "").trim();
     if (b.foodSpecial != null) item.foodSpecial = String(b.foodSpecial || "").trim();
+    if (b.deliveryType != null && ['meetup','delivery','both','digital'].includes(String(b.deliveryType))) item.deliveryType = String(b.deliveryType);
+    if (b.allowOffers != null) item.allowOffers = !!b.allowOffers;
+    if (b.allowTrade != null) item.allowTrade = !!b.allowTrade;
+    if (b.allowBundles != null) item.allowBundles = !!b.allowBundles;
+    if (b.status != null && ['active','ended','sold','deleted','paused'].includes(String(b.status))) item.status = String(b.status);
 
-    // auction updates (only if listing is auction)
     const isAuction = String(item.category || "").toLowerCase() === "auction";
     if (isAuction) {
       if (b.auctionStart !== undefined) item.auctionStart = asDate(b.auctionStart);
@@ -151,7 +180,17 @@ router.patch("/:id", requireAuth, async (req, res, next) => {
   }
 });
 
-// Place a bid
+router.delete('/:id', requireAuth, async (req, res, next) => {
+  try {
+    const item = await Listing.findById(req.params.id);
+    if (!item) return res.status(404).json({ message: 'Listing not found' });
+    if (String(item.owner) !== String(req.user.id) && req.user.role !== 'admin') return res.status(403).json({ message: 'Not allowed' });
+    item.status = 'deleted';
+    await item.save();
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
 router.post("/:id/bid", requireAuth, async (req, res, next) => {
   try {
     const listingId = req.params.id;
@@ -169,49 +208,21 @@ router.post("/:id/bid", requireAuth, async (req, res, next) => {
     }
 
     const now = new Date();
-
-    if (item.auctionStart && now < item.auctionStart) {
-      return res.status(400).json({ message: "Bid window closed (auction not started yet)." });
-    }
+    if (item.auctionStart && now < item.auctionStart) return res.status(400).json({ message: "Bid window closed (auction not started yet)." });
     if (item.auctionEnd && now > item.auctionEnd) {
-      // keep visible but mark ended
       item.status = "ended";
       await item.save();
       return res.status(400).json({ message: "Bid window closed (auction ended)." });
     }
 
     const current = Number(item.currentBid || item.startingBid || item.price || 0);
-    if (amount <= current) {
-      return res.status(400).json({ message: `Bid must be higher than current bid (${current}).` });
-    }
+    if (amount <= current) return res.status(400).json({ message: `Bid must be higher than current bid (${current}).` });
 
     item.currentBid = amount;
     item.bids.push({ bidder: req.user.id, amount, createdAt: now });
-    item.bidsCount = item.bids.length;
     await item.save();
-
-    res.json({
-      listingId: String(item._id),
-      currentBid: item.currentBid,
-      bidsCount: item.bidsCount,
-      auctionEnd: item.auctionEnd,
-      auctionStart: item.auctionStart,
-      status: item.status,
-    });
-  } catch (e) {
-    next(e);
-  }
-});
-
-router.delete("/:id", requireAuth, async (req, res, next) => {
-  try {
-    const item = await Listing.findById(req.params.id);
-    if (!item) return res.status(404).json({ message: "Listing not found" });
-    if (String(item.owner) !== String(req.user.id)) return res.status(403).json({ message: "Not allowed" });
-
-    item.status = "deleted";
-    await item.save();
-    res.json({ message: "Deleted" });
+    const populated = await Listing.findById(item._id).populate("owner", "name email verified seller phone").lean();
+    res.json(populated);
   } catch (e) {
     next(e);
   }

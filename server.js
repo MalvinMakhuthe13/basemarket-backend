@@ -37,7 +37,7 @@ app.set("trust proxy", 1);
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, limit: 600, standardHeaders: "draft-7", legacyHeaders: false }));
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
-app.get("/", (_req, res) => res.json({ message: "BaseMarket API running", version: 'v2' }));
+app.get("/", (_req, res) => res.json({ message: "BaseMarket API running", version: 'v3-payfast-seamless' }));
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
 app.use("/api/auth", authRoutes);

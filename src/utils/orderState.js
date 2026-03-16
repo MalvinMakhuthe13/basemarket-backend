@@ -79,4 +79,48 @@ function deriveLegacyFields(order) {
   return order;
 }
 
-module.exports = { STATUS, TRANSITIONS, canTransition, assertTransition, deriveLegacyFields };
+
+
+function normalizeOrderState(order) {
+  if (!order) return order;
+  const secureDeal = !!order.secureDeal;
+  const status = String(order.status || '').toLowerCase() || STATUS.CREATED;
+  const paymentStatus = String(order.paymentStatus || '').toLowerCase();
+  const escrowStatus = String(order.escrowStatus || '').toLowerCase();
+  const deliveryMethod = String(order.deliveryMethod || 'shipping').toLowerCase();
+  const hasPreparing = !!(order.sellerPreparingAt || order.preparingStartedAt || order.preparingAt);
+  const hasShipped = !!(order.sellerMarkedShippedAt || order.trackingNumber) || ['shipped','meetup_ready'].includes(escrowStatus);
+  const hasDelivered = !!(order.buyerConfirmedAt || order.deliveredAt) || ['delivered','released'].includes(escrowStatus);
+  const payoutPaid = String(order.payoutStatus || '').toLowerCase() === 'paid';
+
+  if (secureDeal && paymentStatus === 'paid' && (status === STATUS.CREATED || !status)) {
+    order.status = STATUS.PAID;
+  }
+  if ((hasPreparing || ['awaiting_fulfilment'].includes(escrowStatus)) && [STATUS.CREATED, STATUS.PAID].includes(String(order.status || '').toLowerCase())) {
+    order.status = STATUS.CONFIRMED;
+  }
+  if (deliveryMethod === 'meetup') {
+    if (hasShipped && [STATUS.CREATED, STATUS.PAID, STATUS.CONFIRMED].includes(String(order.status || '').toLowerCase())) {
+      order.status = STATUS.DELIVERED;
+    }
+  } else {
+    if (hasShipped && [STATUS.CREATED, STATUS.PAID, STATUS.CONFIRMED].includes(String(order.status || '').toLowerCase())) {
+      order.status = STATUS.SHIPPED;
+    }
+    if (hasDelivered && [STATUS.CREATED, STATUS.PAID, STATUS.CONFIRMED, STATUS.SHIPPED].includes(String(order.status || '').toLowerCase())) {
+      order.status = STATUS.DELIVERED;
+    }
+  }
+  if ((hasDelivered || escrowStatus === 'released' || payoutPaid) && ![STATUS.CANCELLED, STATUS.REFUNDED, STATUS.DISPUTED].includes(String(order.status || '').toLowerCase())) {
+    if (String(order.status || '').toLowerCase() === STATUS.DELIVERED && !!order.buyerConfirmedAt) {
+      order.status = STATUS.COMPLETED;
+    }
+    if (escrowStatus === 'released' || payoutPaid) {
+      order.status = STATUS.COMPLETED;
+    }
+  }
+  deriveLegacyFields(order);
+  return order;
+}
+
+module.exports = { STATUS, TRANSITIONS, canTransition, assertTransition, deriveLegacyFields, normalizeOrderState };

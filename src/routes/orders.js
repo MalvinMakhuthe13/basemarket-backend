@@ -4,7 +4,7 @@ const Order = require("../models/Order");
 const Listing = require("../models/Listing");
 const Conversation = require("../models/Conversation");
 const FraudFlag = require('../models/FraudFlag');
-const { STATUS, assertTransition, deriveLegacyFields } = require('../utils/orderState');
+const { STATUS, assertTransition, deriveLegacyFields, normalizeOrderState } = require('../utils/orderState');
 const { createNotification } = require('../utils/notifications');
 const { trackActivity } = require('../utils/activity');
 
@@ -137,18 +137,17 @@ router.post("/", requireAuth, async (req, res, next) => {
 
 router.get('/mine', requireAuth, async (req, res, next) => {
   try {
-    const items = await Order.find({ buyer: req.user.id }).populate('listing seller').sort({ createdAt: -1 }).lean();
-    res.json(items);
+    const docs = await Order.find({ buyer: req.user.id }).populate('listing seller').sort({ createdAt: -1 });
+    for (const doc of docs) { normalizeOrderState(doc); await doc.save().catch(()=>null); }
+    res.json(docs.map((d) => d.toObject ? d.toObject() : d));
   } catch (e) { next(e); }
 });
 
 router.get('/sold', requireAuth, async (req, res, next) => {
   try {
-    const items = await Order.find({ seller: req.user.id }).populate('listing buyer').sort({ createdAt: -1 }).lean();
-    const safe = items.map((o) => {
-      if (!o.contactReleased) { delete o.contact; delete o.address; }
-      return o;
-    });
+    const docs = await Order.find({ seller: req.user.id }).populate('listing buyer').sort({ createdAt: -1 });
+    for (const doc of docs) { normalizeOrderState(doc); await doc.save().catch(()=>null); }
+    const safe = docs.map((doc) => { const o = doc.toObject ? doc.toObject() : doc; if (!o.contactReleased) { delete o.contact; delete o.address; } return o; });
     res.json(safe);
   } catch (e) { next(e); }
 });
@@ -157,6 +156,7 @@ async function releaseContact(req, res, next) {
   try {
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
+    normalizeOrderState(order);
     if (String(order.buyer) !== String(req.user.id)) return res.status(403).json({ message: 'Not allowed' });
     order.contactReleased = true;
     order.contactReleasedAt = new Date();
@@ -173,6 +173,7 @@ router.post('/:id/mark-confirmed', requireAuth, async (req, res, next) => {
   try {
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
+    normalizeOrderState(order);
     if (String(order.seller) !== String(req.user.id)) return res.status(403).json({ message: 'Not allowed' });
     if (order.secureDeal && order.paymentStatus !== 'paid') return res.status(400).json({ message: 'Payment must be confirmed first' });
     assertTransition(order.status, STATUS.CONFIRMED);
@@ -192,6 +193,7 @@ router.post('/:id/mark-preparing', requireAuth, async (req, res, next) => {
   try {
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
+    normalizeOrderState(order);
     if (String(order.seller) !== String(req.user.id)) return res.status(403).json({ message: 'Not allowed' });
     if (order.secureDeal && order.paymentStatus !== 'paid') return res.status(400).json({ message: 'Payment must be confirmed first' });
     if (![STATUS.PAID, STATUS.CONFIRMED].includes(order.status)) return res.status(400).json({ message: 'Order is not ready for preparing yet' });
@@ -213,6 +215,7 @@ router.post('/:id/mark-shipped', requireAuth, async (req, res, next) => {
     const { trackingNumber = '' } = req.body || {};
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
+    normalizeOrderState(order);
     if (String(order.seller) !== String(req.user.id)) return res.status(403).json({ message: 'Not allowed' });
     if (order.secureDeal && order.paymentStatus !== 'paid') return res.status(400).json({ message: 'Secure Deal payment has not been confirmed yet' });
     if (order.status === STATUS.PAID) {
@@ -265,6 +268,7 @@ router.post('/:id/open-dispute', requireAuth, async (req, res, next) => {
     const { reason = '' } = req.body || {};
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
+    normalizeOrderState(order);
     const isBuyer = String(order.buyer) === String(req.user.id);
     const isSeller = String(order.seller) === String(req.user.id);
     if (!isBuyer && !isSeller && req.user.role !== 'admin') return res.status(403).json({ message: 'Not allowed' });
@@ -286,6 +290,7 @@ router.post('/:id/cancel', requireAuth, async (req, res, next) => {
   try {
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
+    normalizeOrderState(order);
     const actorAllowed = String(order.buyer) === String(req.user.id) || String(order.seller) === String(req.user.id) || req.user.role === 'admin';
     if (!actorAllowed) return res.status(403).json({ message: 'Not allowed' });
     assertTransition(order.status, STATUS.CANCELLED);
@@ -303,6 +308,7 @@ router.post('/:id/mark-paid-out', requireAuth, async (req, res, next) => {
   try {
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
+    normalizeOrderState(order);
     if (req.user.role !== 'admin') return res.status(403).json({ message: 'Admin only' });
     order.payoutStatus = 'paid';
     addTimeline(order, 'payout', 'Seller payout marked as completed by admin.');
@@ -319,8 +325,10 @@ router.post('/:id/mark-delivered', requireAuth, async (req, res, next) => {
   try {
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
+    normalizeOrderState(order);
     if (String(order.seller) !== String(req.user.id)) return res.status(403).json({ message: 'Not allowed' });
     if (order.secureDeal && order.paymentStatus !== 'paid') return res.status(400).json({ message: 'Secure Deal payment has not been confirmed yet' });
+    if (order.status === STATUS.PAID) order.status = STATUS.CONFIRMED;
     if (![STATUS.CONFIRMED, STATUS.SHIPPED].includes(order.status)) return res.status(400).json({ message: 'Order is not ready to be marked delivered' });
     assertTransition(order.status, STATUS.DELIVERED);
     order.status = STATUS.DELIVERED;

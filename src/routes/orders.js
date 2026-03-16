@@ -219,12 +219,12 @@ router.post('/:id/mark-shipped', requireAuth, async (req, res, next) => {
       order.status = STATUS.CONFIRMED;
       addTimeline(order, 'order', 'Seller confirmed the order.');
     }
-    assertTransition(order.status, order.deliveryMethod === 'meetup' ? STATUS.DELIVERED : STATUS.SHIPPED);
+    assertTransition(order.status, STATUS.SHIPPED);
     order.trackingNumber = trackingNumber || order.trackingNumber;
     order.sellerMarkedShippedAt = new Date();
-    order.status = order.deliveryMethod === 'meetup' ? STATUS.DELIVERED : STATUS.SHIPPED;
+    order.status = STATUS.SHIPPED;
     deriveLegacyFields(order);
-    addTimeline(order, 'fulfilment', order.deliveryMethod === 'meetup' ? 'Seller marked the item ready for meetup and handover.' : `Seller marked the item shipped${trackingNumber ? ` (${trackingNumber})` : ''}.`);
+    addTimeline(order, 'fulfilment', order.deliveryMethod === 'meetup' ? 'Seller marked the item ready for meetup / handover.' : `Seller marked the item shipped${trackingNumber ? ` (${trackingNumber})` : ''}.`);
     await order.save();
     await appendOrderConversationMessage(order, order.deliveryMethod === 'meetup' ? 'Seller marked the order ready for meetup / handover.' : `Seller marked the order shipped${trackingNumber ? ` (${trackingNumber})` : ''}.`);
     await createNotification({ userId: order.buyer, type: 'order_update', title: order.deliveryMethod === 'meetup' ? 'Meetup order ready' : 'Order shipped', body: order.deliveryMethod === 'meetup' ? 'The seller marked your order ready for meetup / handover.' : 'Your seller marked the order as shipped.', actionUrl: '/profile.html', actionLabel: 'Track order', icon: 'truck', severity: 'info' }).catch(()=>null);

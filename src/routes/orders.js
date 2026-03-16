@@ -133,6 +133,7 @@ async function releaseContact(req, res, next) {
     order.contactReleasedAt = new Date();
     addTimeline(order, 'privacy', 'Buyer released contact details to seller.');
     await order.save();
+    await createNotification({ userId: order.seller, type: 'order_update', title: 'Buyer released contact details', body: 'You can now view the buyer contact details for fulfilment.', actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'unlock', severity: 'info' }).catch(()=>null);
     res.json({ ok: true });
   } catch (e) { next(e); }
 }
@@ -151,6 +152,7 @@ router.post('/:id/mark-confirmed', requireAuth, async (req, res, next) => {
     addTimeline(order, 'order', 'Seller confirmed the order and is preparing fulfilment.');
     await order.save();
     await createNotification({ userId: order.buyer, type: 'order_update', title: 'Seller confirmed your order', body: 'Your order is now being prepared for fulfilment.', actionUrl: '/profile.html', actionLabel: 'Track order', icon: 'package-check', severity: 'success' }).catch(()=>null);
+    await createNotification({ userId: order.seller, type: 'order_update', title: 'Order moved to fulfilment', body: 'This order is now confirmed and should be prepared for shipping, meetup, or delivery.', actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'package', severity: 'info' }).catch(()=>null);
     res.json({ ok: true, order: await hydrate(order._id) });
   } catch (e) { next(e); }
 });
@@ -174,6 +176,7 @@ router.post('/:id/mark-shipped', requireAuth, async (req, res, next) => {
     addTimeline(order, 'fulfilment', order.deliveryMethod === 'meetup' ? 'Seller marked the item ready for meetup and handover.' : `Seller marked the item shipped${trackingNumber ? ` (${trackingNumber})` : ''}.`);
     await order.save();
     await createNotification({ userId: order.buyer, type: 'order_update', title: order.deliveryMethod === 'meetup' ? 'Meetup order ready' : 'Order shipped', body: order.deliveryMethod === 'meetup' ? 'The seller marked your order ready for meetup / handover.' : 'Your seller marked the order as shipped.', actionUrl: '/profile.html', actionLabel: 'Track order', icon: 'truck', severity: 'info' }).catch(()=>null);
+    await createNotification({ userId: order.seller, type: 'order_update', title: order.deliveryMethod === 'meetup' ? 'Meetup marked ready' : 'Shipment update saved', body: order.deliveryMethod === 'meetup' ? 'The order now waits for the buyer handover confirmation.' : 'The buyer has been notified that the order shipped.', actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'truck', severity: 'success' }).catch(()=>null);
     res.json({ ok: true, order: await hydrate(order._id) });
   } catch (e) { next(e); }
 });
@@ -199,6 +202,7 @@ router.post('/:id/confirm-delivery', requireAuth, async (req, res, next) => {
     addTimeline(order, 'delivery', 'Buyer confirmed delivery. Seller payout is now ready for release.');
     await order.save();
     await createNotification({ userId: order.seller, type: 'order_update', title: 'Buyer confirmed delivery', body: 'Your order is completed and payout is now ready for release.', actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'badge-check', severity: 'success' }).catch(()=>null);
+    await createNotification({ userId: order.buyer, type: 'order_update', title: 'Order completed', body: 'Thanks for confirming delivery. Your order is now complete.', actionUrl: '/profile.html', actionLabel: 'View order', icon: 'check-circle', severity: 'success' }).catch(()=>null);
     res.json({ ok: true, order: await hydrate(order._id) });
   } catch (e) { next(e); }
 });
@@ -218,6 +222,8 @@ router.post('/:id/open-dispute', requireAuth, async (req, res, next) => {
     deriveLegacyFields(order);
     addTimeline(order, 'dispute', `Dispute opened${reason ? `: ${reason}` : '.'}`);
     await order.save();
+    await createNotification({ userId: order.buyer, type: 'order_update', title: 'Dispute opened', body: 'A dispute was opened on this order. Our team can now review it.', actionUrl: '/profile.html', actionLabel: 'View order', icon: 'shield-alert', severity: 'warning' }).catch(()=>null);
+    await createNotification({ userId: order.seller, type: 'order_update', title: 'Dispute opened', body: 'A dispute was opened on this order. Please review the issue details.', actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'shield-alert', severity: 'warning' }).catch(()=>null);
     await createFraudFlag('order', order._id, reason || 'Order dispute opened', 'high', { buyer: order.buyer, seller: order.seller });
     res.json({ ok: true, order: await hydrate(order._id) });
   } catch (e) { next(e); }
@@ -234,6 +240,8 @@ router.post('/:id/cancel', requireAuth, async (req, res, next) => {
     deriveLegacyFields(order);
     addTimeline(order, 'order', req.user.role === 'admin' ? 'Order cancelled by admin.' : 'Order cancelled.');
     await order.save();
+    await createNotification({ userId: order.buyer, type: 'order_update', title: 'Order cancelled', body: 'This order was cancelled.', actionUrl: '/profile.html', actionLabel: 'View order', icon: 'x-circle', severity: 'warning' }).catch(()=>null);
+    await createNotification({ userId: order.seller, type: 'order_update', title: 'Order cancelled', body: 'This order was cancelled.', actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'x-circle', severity: 'warning' }).catch(()=>null);
     res.json({ ok: true, order: await hydrate(order._id) });
   } catch (e) { next(e); }
 });
@@ -246,6 +254,7 @@ router.post('/:id/mark-paid-out', requireAuth, async (req, res, next) => {
     order.payoutStatus = 'paid';
     addTimeline(order, 'payout', 'Seller payout marked as completed by admin.');
     await order.save();
+    await createNotification({ userId: order.seller, type: 'payout_update', title: 'Seller payout marked paid', body: 'Admin marked the seller payout as completed.', actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'wallet', severity: 'success' }).catch(()=>null);
     res.json({ ok: true, order: await hydrate(order._id) });
   } catch (e) { next(e); }
 });
@@ -265,6 +274,8 @@ router.post('/:id/mark-delivered', requireAuth, async (req, res, next) => {
     deriveLegacyFields(order);
     addTimeline(order, 'fulfilment', order.deliveryMethod === 'meetup' ? 'Seller marked the meetup handover complete.' : 'Seller marked the shipment delivered / handed over.');
     await order.save();
+    await createNotification({ userId: order.buyer, type: 'order_update', title: 'Seller marked the order delivered', body: 'Please confirm delivery if everything is correct.', actionUrl: '/profile.html', actionLabel: 'Track order', icon: 'package-check', severity: 'info' }).catch(()=>null);
+    await createNotification({ userId: order.seller, type: 'order_update', title: 'Delivery stage recorded', body: 'The order has moved to delivered and now waits for buyer confirmation.', actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'package-check', severity: 'success' }).catch(()=>null);
     res.json({ ok: true, order: await hydrate(order._id) });
   } catch (e) { next(e); }
 });

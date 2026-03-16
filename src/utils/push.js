@@ -1,16 +1,27 @@
 let webpush = null;
-try { webpush = require('web-push'); } catch (_) { webpush = null; }
-
 let configured = false;
+
+function getWebPush() {
+  if (webpush) return webpush;
+  try {
+    // Optional dependency: if missing, push simply stays disabled.
+    // This prevents deploy/install failures from breaking the whole API.
+    // eslint-disable-next-line global-require
+    webpush = require('web-push');
+  } catch (_err) {
+    webpush = null;
+  }
+  return webpush;
+}
 
 function ensureConfigured() {
   if (configured) return true;
-  if (!webpush) return false;
   const publicKey = process.env.VAPID_PUBLIC_KEY;
   const privateKey = process.env.VAPID_PRIVATE_KEY;
   const subject = process.env.VAPID_SUBJECT || 'mailto:support@basemarket.local';
-  if (!publicKey || !privateKey) return false;
-  webpush.setVapidDetails(subject, publicKey, privateKey);
+  const wp = getWebPush();
+  if (!wp || !publicKey || !privateKey) return false;
+  wp.setVapidDetails(subject, publicKey, privateKey);
   configured = true;
   return true;
 }
@@ -20,8 +31,9 @@ function getPublicKey() {
 }
 
 async function sendPush(subscription, payload) {
-  if (!ensureConfigured()) return { ok: false, disabled: true };
-  await webpush.sendNotification(subscription, JSON.stringify(payload));
+  const wp = getWebPush();
+  if (!wp || !ensureConfigured()) return { ok: false, disabled: true };
+  await wp.sendNotification(subscription, JSON.stringify(payload));
   return { ok: true };
 }
 

@@ -4,6 +4,7 @@ const { requireAuth } = require("../middleware/auth");
 const Order = require("../models/Order");
 const FraudFlag = require('../models/FraudFlag');
 const { STATUS, deriveLegacyFields } = require('../utils/orderState');
+const { createNotification } = require('../utils/notifications');
 
 const router = express.Router();
 
@@ -107,12 +108,15 @@ router.post("/itn", express.urlencoded({ extended: false }), async (req, res) =>
       deriveLegacyFields(order);
       addTimeline(order, "payment", "Payment secured via PayFast ITN. Funds are locked until order completion.");
       await order.save();
+      await createNotification({ userId: order.seller, type: 'payment_received', title: 'Buyer payment confirmed', body: "The buyer's secure payment was confirmed. You can now confirm and fulfil the order.", actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'wallet', severity: 'success' }).catch(()=>null);
+      await createNotification({ userId: order.buyer, type: 'payment_received', title: 'Payment secured', body: 'Your payment is confirmed and the seller can now prepare your order.', actionUrl: '/profile.html', actionLabel: 'Track order', icon: 'shield-check', severity: 'success' }).catch(()=>null);
     } else if (["FAILED", "CANCELLED"].includes(paymentStatus)) {
       order.paymentStatus = paymentStatus === "FAILED" ? "failed" : "cancelled";
       if (order.status === STATUS.CREATED) order.status = STATUS.CANCELLED;
       deriveLegacyFields(order);
       addTimeline(order, "payment", `Payment ${paymentStatus.toLowerCase()} on PayFast.`);
       await order.save();
+      await createNotification({ userId: order.buyer, type: 'payment_update', title: 'Payment was not completed', body: `Your PayFast payment was ${paymentStatus.toLowerCase()}.`, actionUrl: '/profile.html', actionLabel: 'View order', icon: 'alert-circle', severity: 'warning' }).catch(()=>null);
     }
 
     return res.status(200).send("OK");

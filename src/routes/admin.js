@@ -1,5 +1,4 @@
 const express = require("express");
-const { nanoid } = require("nanoid");
 const { requireAdminKey } = require("../middleware/adminKey");
 const User = require("../models/User");
 const ManualCode = require("../models/ManualCode");
@@ -11,6 +10,16 @@ const { STATUS, deriveLegacyFields, assertTransition } = require('../utils/order
 
 const router = express.Router();
 router.use(requireAdminKey);
+
+
+function generateVerificationCode(length = 10) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let out = '';
+  for (let i = 0; i < length; i += 1) {
+    out += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return out;
+}
 
 
 function addTimeline(order, type, message) {
@@ -124,7 +133,7 @@ router.post("/verification-code", async (req, res, next) => {
   try {
     const daysValid = Number((req.body || {}).daysValid || 30);
     const ms = 1000 * 60 * 60 * 24 * (Number.isFinite(daysValid) && daysValid > 0 ? daysValid : 30);
-    const code = nanoid(10).toUpperCase().replace(/[-_]/g, "A");
+    const code = generateVerificationCode(10);
     const expiresAt = new Date(Date.now() + ms);
     await ManualCode.create({ code, expiresAt });
     res.json({ code, expiresAt });

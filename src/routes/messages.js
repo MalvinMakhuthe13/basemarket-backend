@@ -56,8 +56,18 @@ router.post("/start", requireAuth, async (req, res, next) => {
       normalizedOrderId = order._id;
     }
 
-    let conv = await Conversation.findOne({ listing: listingId, buyer: buyerId, seller: sellerId, order: normalizedOrderId });
-    if (!conv) conv = await Conversation.create({ listing: listingId, buyer: buyerId, seller: sellerId, order: normalizedOrderId });
+    let conv = null;
+    if (normalizedOrderId) {
+      conv = await Conversation.findOne({ listing: listingId, buyer: buyerId, seller: sellerId, order: normalizedOrderId });
+    }
+    if (!conv) {
+      conv = await Conversation.findOne({ listing: listingId, buyer: buyerId, seller: sellerId }).sort({ updatedAt: -1 });
+    }
+    if (!conv) {
+      conv = await Conversation.create({ listing: listingId, buyer: buyerId, seller: sellerId, order: normalizedOrderId });
+    } else if (normalizedOrderId && !conv.order) {
+      conv.order = normalizedOrderId;
+    }
 
     if (text && String(text).trim()) {
       conv.messages.push({ sender: buyerId, text: String(text).trim() });

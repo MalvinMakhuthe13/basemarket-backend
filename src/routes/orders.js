@@ -29,7 +29,14 @@ async function appendOrderConversationMessage(order, text) {
   try {
     if (!order || !order.listing || !order.buyer || !order.seller || !text) return;
     let conversation = await Conversation.findOne({ listing: order.listing, buyer: order.buyer, seller: order.seller, order: order._id });
-    if (!conversation) conversation = await Conversation.create({ listing: order.listing, buyer: order.buyer, seller: order.seller, order: order._id });
+    if (!conversation) {
+      conversation = await Conversation.findOne({ listing: order.listing, buyer: order.buyer, seller: order.seller }).sort({ updatedAt: -1 });
+    }
+    if (!conversation) {
+      conversation = await Conversation.create({ listing: order.listing, buyer: order.buyer, seller: order.seller, order: order._id });
+    } else if (!conversation.order) {
+      conversation.order = order._id;
+    }
     conversation.messages.push({ sender: order.seller, text: String(text).trim() });
     conversation.lastMessage = String(text).trim();
     conversation.lastMessageAt = new Date();
@@ -114,7 +121,15 @@ router.post("/", requireAuth, async (req, res, next) => {
     await order.save();
     await trackActivity({ userId: req.user.id, type: 'order_created', entityType: 'order', entityId: String(order._id), listingId: listing._id, meta: { amount, secureDeal: isSecure, deliveryMethod: resolvedDeliveryMethod } }).catch(()=>null);
     await createNotification({ userId: sellerId, type: 'order_created', title: 'New order received', body: `${listing.title || listing.name || 'A listing'} was ordered on BaseMarket.`, actionUrl: '/profile.html', actionLabel: 'View orders', icon: 'shopping-bag', severity: 'success' }).catch(()=>null);
-    await Conversation.findOneAndUpdate({ listing: listing._id, buyer: req.user.id, seller: sellerId, order: order._id }, { $setOnInsert: { listing: listing._id, buyer: req.user.id, seller: sellerId, order: order._id }, $set: { lastMessage: 'Order created', lastMessageAt: new Date() } }, { upsert: true, new: true }).catch(()=>null);
+    const existingConversation = await Conversation.findOne({ listing: listing._id, buyer: req.user.id, seller: sellerId }).sort({ updatedAt: -1 }).catch(()=>null);
+    if (existingConversation) {
+      if (!existingConversation.order) existingConversation.order = order._id;
+      existingConversation.lastMessage = existingConversation.lastMessage || 'Order created';
+      existingConversation.lastMessageAt = new Date();
+      await existingConversation.save().catch(()=>null);
+    } else {
+      await Conversation.create({ listing: listing._id, buyer: req.user.id, seller: sellerId, order: order._id, lastMessage: 'Order created', lastMessageAt: new Date() }).catch(()=>null);
+    }
     await createNotification({ userId: req.user.id, type: 'order_created', title: 'Order created', body: `Your order for ${listing.title || listing.name || 'this listing'} is now open.`, actionUrl: '/profile.html', actionLabel: 'Track order', icon: 'shopping-bag', severity: 'info' }).catch(()=>null);
     res.json(await hydrate(order._id));
   } catch (e) { next(e); }

@@ -1,10 +1,30 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const rateLimit = require("express-rate-limit");
 const User = require("../models/User");
 const { requireAuth } = require("../middleware/auth");
 
 const router = express.Router();
+
+// Strict rate limiter for login — max 10 attempts per 15 min per IP
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { message: "Too many login attempts. Please try again in 15 minutes." },
+  skipSuccessfulRequests: true, // only count failed attempts
+});
+
+// Rate limiter for register — max 5 new accounts per hour per IP
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 5,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { message: "Too many accounts created from this IP. Please try again later." },
+});
 
 function mustHaveJwtSecret() {
   if (!process.env.JWT_SECRET) {
@@ -23,7 +43,7 @@ function sign(user) {
   );
 }
 
-router.post("/register", async (req, res, next) => {
+router.post("/register", registerLimiter, async (req, res, next) => {
   try {
     const { name, email, password } = req.body || {};
     if (!name || !email || !password) return res.status(400).json({ message: "Missing fields" });
@@ -47,7 +67,7 @@ router.post("/register", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post("/login", async (req, res, next) => {
+router.post("/login", loginLimiter, async (req, res, next) => {
   try {
     const { email, password } = req.body || {};
     if (!email || !password) return res.status(400).json({ message: "Missing fields" });

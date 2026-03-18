@@ -4,12 +4,30 @@ const { requireAuth } = require("../middleware/auth");
 const Order = require("../models/Order");
 const Conversation = require("../models/Conversation");
 const FraudFlag = require('../models/FraudFlag');
-const { STATUS, deriveLegacyFields } = require('../utils/orderState');
+const { STATUS, deriveLegacyFields, normalizeOrderState } = require('../utils/orderState');
 const { createNotification } = require('../utils/notifications');
 
 const router = express.Router();
 
-function isSandboxLike() {
+// Official PayFast ITN IP ranges (updated March 2024)
+// https://developers.payfast.co.za/docs#step_4_confirm_payment
+const PAYFAST_ITN_IPS = new Set([
+  '197.97.145.144', '197.97.145.145', '197.97.145.146', '197.97.145.147',
+  '41.74.179.194', '41.74.179.195', '41.74.179.196', '41.74.179.197',
+]);
+
+function getClientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded) return forwarded.split(',')[0].trim();
+  return req.socket?.remoteAddress || req.connection?.remoteAddress || '';
+}
+
+function isValidPayfastIp(req) {
+  // Skip IP check in sandbox/dev mode
+  if (isSandboxLike()) return true;
+  const ip = getClientIp(req);
+  return PAYFAST_ITN_IPS.has(ip);
+}
   const host = String(process.env.PAYFAST_HOST || '').toLowerCase();
   return !host || host.includes('sandbox') || String(process.env.NODE_ENV || '').toLowerCase() !== 'production';
 }
@@ -33,6 +51,12 @@ async function markOrderPaidFallback(order, source, gatewayRef = '') {
 
 function urlEncode(str = "") {
   return encodeURIComponent(String(str).trim()).replace(/%20/g, "+");
+}
+
+function ensureAbsoluteUrl(value, fallback = '') {
+  const candidate = String(value || '').trim();
+  if (/^https?:\/\//i.test(candidate)) return candidate.replace(/\/$/, '');
+  return String(fallback || '').trim().replace(/\/$/, '');
 }
 
 function buildSignature(data, passphrase = "") {
@@ -74,15 +98,22 @@ router.post("/create-payment", requireAuth, async (req, res) => {
     if (!order.secureDeal) return res.status(400).json({ message: "PayFast checkout is only for Secure Deal orders" });
     if (order.paymentStatus !== "awaiting_payment") return res.status(400).json({ message: "Order is not awaiting payment" });
 
-    const amount = Number(order.amount || 0).toFixed(2);
-    if (Number(amount) <= 0) return res.status(400).json({ message: "Order amount is invalid" });
+    normalizeOrderState(order);
+    const amountValue = Number(order.amount || 0);
+    const amount = amountValue.toFixed(2);
 
     const host = process.env.PAYFAST_HOST || "https://sandbox.payfast.co.za/eng/process";
-    const publicBackendBase = String(process.env.PUBLIC_BACKEND_URL || `${req.protocol}://${req.get('host') || ''}`).replace(/\/$/, '');
-    const frontendOrigin = String(process.env.FRONTEND_ORIGIN || `${req.protocol}://${req.get('host') || ''}`).replace(/\/$/, '');
+    const requestBase = `${req.protocol}://${req.get('host') || ''}`;
+    const publicBackendBase = ensureAbsoluteUrl(process.env.PUBLIC_BACKEND_URL, requestBase);
+    const frontendOrigin = ensureAbsoluteUrl(process.env.FRONTEND_ORIGIN, requestBase);
     const returnUrl = `${publicBackendBase}/api/payfast/return?orderId=${encodeURIComponent(String(order._id))}`;
     const cancelUrl = `${publicBackendBase}/api/payfast/cancel?orderId=${encodeURIComponent(String(order._id))}`;
-    const notifyUrl = process.env.PAYFAST_NOTIFY_URL || `${publicBackendBase}/api/payfast/itn`;
+    const notifyUrl = ensureAbsoluteUrl(process.env.PAYFAST_NOTIFY_URL, `${publicBackendBase}/api/payfast/itn`) || `${publicBackendBase}/api/payfast/itn`;
+
+    if (amountValue <= 0) {
+      await markOrderPaidFallback(order, 'Payment completed with zero payable balance. The seller can now confirm and fulfil the order.', `zero-${order._id}`);
+      return res.json({ ok: true, immediate: true, redirectUrl: `${frontendOrigin}/profile.html?tab=orders&orderId=${encodeURIComponent(String(order._id))}&payfast=complete#orders`, order });
+    }
     const data = {
       merchant_id: process.env.PAYFAST_MERCHANT_ID,
       merchant_key: process.env.PAYFAST_MERCHANT_KEY,
@@ -122,6 +153,14 @@ router.get('/itn', (_req, res) => {
 
 router.post("/itn", express.urlencoded({ extended: false }), async (req, res) => {
   try {
+    // Verify the request is from a known PayFast IP (production only)
+    if (!isValidPayfastIp(req)) {
+      const ip = getClientIp(req);
+      console.warn(`PayFast ITN rejected from unknown IP: ${ip}`);
+      await FraudFlag.create({ entityType: 'payment', entityId: 'unknown', reason: `ITN received from unknown IP: ${ip}`, severity: 'high', metadata: { ip, body: req.body }, createdBy: 'payfast-itn' }).catch(() => {});
+      return res.status(200).type('text/plain').send('OK'); // always 200 to PayFast
+    }
+
     const body = req.body || {};
     const receivedSignature = body.signature || "";
     const verificationData = { ...body };
@@ -191,7 +230,7 @@ router.get('/return', async (req, res) => {
   try {
     const query = req.query || {};
     const orderId = query.orderId || query.m_payment_id;
-    const genericRedirect = `${String(process.env.FRONTEND_ORIGIN || `${req.protocol}://${req.get('host') || ''}`).replace(/\/$/, '')}/profile.html?tab=orders#orders`;
+    const genericRedirect = `${ensureAbsoluteUrl(process.env.FRONTEND_ORIGIN, `${req.protocol}://${req.get('host') || ''}`)}/profile.html?tab=orders#orders`;
     if (!orderId) return res.redirect(genericRedirect);
     const order = await Order.findById(orderId);
     if (!order) return res.redirect(genericRedirect);
@@ -205,7 +244,7 @@ router.get('/return', async (req, res) => {
     }
     return res.redirect(buildFrontendOrderUrl(req, order, paymentStatus === 'COMPLETE' ? 'complete' : 'return', query));
   } catch (_err) {
-    return res.redirect(`${String(process.env.FRONTEND_ORIGIN || `${req.protocol}://${req.get('host') || ''}`).replace(/\/$/, '')}/profile.html?tab=orders#orders`);
+    return res.redirect(`${ensureAbsoluteUrl(process.env.FRONTEND_ORIGIN, `${req.protocol}://${req.get('host') || ''}`)}/profile.html?tab=orders#orders`);
   }
 });
 
@@ -213,7 +252,7 @@ router.get('/cancel', async (req, res) => {
   try {
     const query = req.query || {};
     const orderId = query.orderId || query.m_payment_id;
-    const genericRedirect = `${String(process.env.FRONTEND_ORIGIN || `${req.protocol}://${req.get('host') || ''}`).replace(/\/$/, '')}/profile.html?tab=orders&payfast=cancel#orders`;
+    const genericRedirect = `${ensureAbsoluteUrl(process.env.FRONTEND_ORIGIN, `${req.protocol}://${req.get('host') || ''}`)}/profile.html?tab=orders&payfast=cancel#orders`;
     if (!orderId) return res.redirect(genericRedirect);
     const order = await Order.findById(orderId);
     if (order) {
@@ -224,7 +263,7 @@ router.get('/cancel', async (req, res) => {
     }
     return res.redirect(genericRedirect);
   } catch (_err) {
-    return res.redirect(`${String(process.env.FRONTEND_ORIGIN || `${req.protocol}://${req.get('host') || ''}`).replace(/\/$/, '')}/profile.html?tab=orders&payfast=cancel#orders`);
+    return res.redirect(`${ensureAbsoluteUrl(process.env.FRONTEND_ORIGIN, `${req.protocol}://${req.get('host') || ''}`)}/profile.html?tab=orders&payfast=cancel#orders`);
   }
 });
 

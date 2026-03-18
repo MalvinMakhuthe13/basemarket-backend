@@ -30,14 +30,25 @@ app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(express.json({ limit: "8mb" }));
 app.use(express.urlencoded({ extended: true, limit: '8mb' }));
 
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || process.env.CORS_ORIGIN || "*";
-app.use(cors({ origin: FRONTEND_ORIGIN === "*" ? true : FRONTEND_ORIGIN.split(",").map(s => s.trim()), credentials: true }));
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || process.env.CORS_ORIGIN || null;
+const isProduction = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+
+// In production, FRONTEND_ORIGIN must be set — never default to wildcard
+if (isProduction && !FRONTEND_ORIGIN) {
+  console.error("⛔ FATAL: FRONTEND_ORIGIN env var is not set. CORS will block all origins in production.");
+}
+
+const corsOrigin = !FRONTEND_ORIGIN
+  ? (isProduction ? false : true) // prod: block all; dev: allow all
+  : FRONTEND_ORIGIN.split(",").map(s => s.trim());
+
+app.use(cors({ origin: corsOrigin, credentials: true }));
 app.use(morgan("dev"));
 app.set("trust proxy", 1);
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, limit: 600, standardHeaders: "draft-7", legacyHeaders: false }));
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
-app.get("/", (_req, res) => res.json({ message: "BaseMarket API running", version: 'v3-payfast-seamless' }));
+app.get("/", (_req, res) => res.json({ message: "BaseMarket API running", version: 'v4-payfast-gold' }));
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
 app.use("/api/auth", authRoutes);
@@ -65,5 +76,17 @@ connectDB().then(() => {
   });
 }).catch((e) => {
   console.error("Failed to start:", e);
+  process.exit(1);
+});
+
+// Catch async errors that escape route handlers
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("Unhandled Promise Rejection:", reason);
+  // Don't crash — log and continue. In production consider graceful shutdown.
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught Exception:", err);
+  // Uncaught exceptions leave the process in unknown state — exit and let host restart
   process.exit(1);
 });

@@ -9,6 +9,28 @@ const router = express.Router();
 const uploadDir = path.join(process.cwd(), 'uploads', 'listings');
 fs.mkdirSync(uploadDir, { recursive: true });
 
+// Magic bytes signatures for allowed image types
+const IMAGE_SIGNATURES = [
+  { mime: 'image/jpeg', bytes: [0xFF, 0xD8, 0xFF] },
+  { mime: 'image/png',  bytes: [0x89, 0x50, 0x4E, 0x47] },
+  { mime: 'image/gif',  bytes: [0x47, 0x49, 0x46, 0x38] },
+  { mime: 'image/webp', bytes: [0x52, 0x49, 0x46, 0x46] }, // RIFF header
+];
+
+function validateMagicBytes(filePath) {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(8);
+    fs.readSync(fd, buf, 0, 8, 0);
+    fs.closeSync(fd);
+    return IMAGE_SIGNATURES.some(sig =>
+      sig.bytes.every((b, i) => buf[i] === b)
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadDir),
   filename: (_req, file, cb) => {
@@ -80,15 +102,32 @@ function normalizeListingInput(b = {}) {
 
 router.get("/", async (req, res, next) => {
   try {
-    const items = await Listing.find({
-      $or: [
-        { status: { $ne: "deleted" } },
-        { status: { $exists: false } },
+    // Pagination: ?page=1&limit=30 (default 30, max 100)
+    const page  = Math.max(1, parseInt(req.query.page)  || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 30));
+    const skip  = (page - 1) * limit;
+
+    // Optional category filter: ?category=sell
+    const categoryFilter = req.query.category && req.query.category !== 'all'
+      ? { category: String(req.query.category).toLowerCase().trim() }
+      : {};
+
+    const baseFilter = {
+      $and: [
+        { $or: [{ status: { $ne: "deleted" } }, { status: { $exists: false } }] },
+        categoryFilter,
       ],
-    })
-      .populate("owner", "name email verified seller phone role")
-      .sort({ createdAt: -1 })
-      .lean();
+    };
+
+    const [items, total] = await Promise.all([
+      Listing.find(baseFilter)
+        .populate("owner", "name email verified seller phone role")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Listing.countDocuments(baseFilter),
+    ]);
 
     const normalized = (items || []).map((it) => {
       if (it && typeof it === "object") {
@@ -108,14 +147,34 @@ router.get("/", async (req, res, next) => {
       return it;
     });
 
-    res.json(normalized);
+    res.json({
+      listings: normalized,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+        hasNext: page * limit < total,
+        hasPrev: page > 1,
+      },
+    });
   } catch (e) {
     next(e);
   }
 });
 
 router.post('/upload', requireAuth, upload.array('images', 6), async (req, res) => {
-  res.json({ ok: true, images: toPublicImageUrls(req, req.files || []) });
+  const files = req.files || [];
+
+  // Validate actual file content (magic bytes) — mimetype alone can be spoofed
+  const invalid = files.filter(f => !validateMagicBytes(f.path));
+  if (invalid.length > 0) {
+    // Delete all uploaded files and reject
+    files.forEach(f => fs.unlink(f.path, () => {}));
+    return res.status(400).json({ message: 'One or more files failed image validation. Only real image files are accepted.' });
+  }
+
+  res.json({ ok: true, images: toPublicImageUrls(req, files) });
 });
 
 router.post("/", requireAuth, async (req, res, next) => {

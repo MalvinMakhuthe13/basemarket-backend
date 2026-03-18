@@ -69,8 +69,10 @@ router.get('/overview', async (_req, res, next) => {
 
 router.get("/users", async (req, res, next) => {
   try {
-    const q = String(req.query.search || "").trim().toLowerCase();
-    const filter = q ? { $or: [{ email: { $regex: q, $options: "i" } }, { name: { $regex: q, $options: "i" } }] } : {};
+    const q = String(req.query.search || "").trim().slice(0, 100); // cap length
+    // Escape special regex characters to prevent ReDoS
+    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const filter = escaped ? { $or: [{ email: { $regex: escaped, $options: "i" } }, { name: { $regex: escaped, $options: "i" } }] } : {};
     const users = await User.find(filter).sort({ createdAt: -1 }).limit(200).lean();
     res.json({ users });
   } catch (e) { next(e); }

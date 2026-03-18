@@ -28,6 +28,8 @@ function isValidPayfastIp(req) {
   const ip = getClientIp(req);
   return PAYFAST_ITN_IPS.has(ip);
 }
+
+function isSandboxLike() {
   const host = String(process.env.PAYFAST_HOST || '').toLowerCase();
   return !host || host.includes('sandbox') || String(process.env.NODE_ENV || '').toLowerCase() !== 'production';
 }

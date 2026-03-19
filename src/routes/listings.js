@@ -157,6 +157,9 @@ router.get("/", async (req, res, next) => {
         hasNext: page * limit < total,
         hasPrev: page > 1,
       },
+      // Backward-compat: some older frontend code expects a plain array
+      // The frontend should use .listings but this ensures nothing breaks
+      length: normalized.length,
     });
   } catch (e) {
     next(e);

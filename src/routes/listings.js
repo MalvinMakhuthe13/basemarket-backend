@@ -4,6 +4,8 @@ const path = require('path');
 const multer = require('multer');
 const Listing = require("../models/Listing");
 const { requireAuth } = require("../middleware/auth");
+const { normalizeListingMode, enrichListingModeFields } = require("../utils/listingModes");
+const { buildTrustProfilesForUsers } = require("../utils/trust");
 
 const router = express.Router();
 const uploadDir = path.join(process.cwd(), 'uploads', 'listings');
@@ -59,7 +61,7 @@ function toPublicImageUrls(req, files = []) {
 }
 
 function normalizeListingInput(b = {}) {
-  const category = String(b.category || "sell").toLowerCase().trim();
+  const category = normalizeListingMode(b.category || b.type || b.typeKey || b.mode || "sell");
   const auctionStart = asDate(b.auctionStart);
   const auctionEnd = asDate(b.auctionEnd);
   const price = Number(b.price || 0);
@@ -112,9 +114,30 @@ router.get("/", async (req, res, next) => {
       ? { category: String(req.query.category).toLowerCase().trim() }
       : {};
 
+    const now = new Date();
+    const activeStatuses = ['active', 'ended', 'sold'];
     const baseFilter = {
       $and: [
-        { $or: [{ status: { $ne: "deleted" } }, { status: { $exists: false } }] },
+        {
+          $or: [
+            {
+              sourceType: 'sponsored',
+              moderationStatus: 'approved',
+              status: { $in: activeStatuses },
+              $and: [
+                { $or: [{ sponsoredStartsAt: null }, { sponsoredStartsAt: { $exists: false } }, { sponsoredStartsAt: { $lte: now } }] },
+                { $or: [{ sponsoredEndsAt: null }, { sponsoredEndsAt: { $exists: false } }, { sponsoredEndsAt: { $gte: now } }] }
+              ]
+            },
+            {
+              $or: [{ sourceType: 'user' }, { sourceType: { $exists: false } }],
+              $and: [
+                { $or: [{ moderationStatus: 'approved' }, { moderationStatus: { $exists: false } }] },
+                { $or: [{ status: { $in: activeStatuses } }, { status: { $exists: false } }] }
+              ]
+            }
+          ]
+        },
         categoryFilter,
       ],
     };
@@ -122,13 +145,14 @@ router.get("/", async (req, res, next) => {
     const [items, total] = await Promise.all([
       Listing.find(baseFilter)
         .populate("owner", "name email verified seller phone role")
-        .sort({ createdAt: -1 })
+        .sort({ isSponsored: -1, sponsoredPriority: -1, createdAt: -1 })
         .skip(skip)
         .limit(limit)
         .lean(),
       Listing.countDocuments(baseFilter),
     ]);
 
+    const trustProfiles = await buildTrustProfilesForUsers((items || []).map((it) => it.owner).filter(Boolean));
     const normalized = (items || []).map((it) => {
       if (it && typeof it === "object") {
         if (it.bidsCount == null && Array.isArray(it.bids)) it.bidsCount = it.bids.length;
@@ -143,8 +167,10 @@ router.get("/", async (req, res, next) => {
         if (it.foodUnit == null) it.foodUnit = "";
         if (it.foodSpecial == null) it.foodSpecial = "";
         if (!it.deliveryType) it.deliveryType = 'both';
+        const ownerId = String(it.owner?._id || it.owner?.id || it.owner || '');
+        if (ownerId && trustProfiles[ownerId]) it.trustProfile = trustProfiles[ownerId];
       }
-      return it;
+      return enrichListingModeFields(it);
     });
 
     res.json({
@@ -183,6 +209,8 @@ router.post("/", requireAuth, async (req, res, next) => {
     const input = normalizeListingInput(b);
     const doc = await Listing.create({
       owner: req.user.id,
+      sourceType: 'user',
+      moderationStatus: 'approved',
       ...input,
       images: Array.isArray(b.images) ? b.images : (b.image ? [b.image] : []),
     });
@@ -191,7 +219,7 @@ router.post("/", requireAuth, async (req, res, next) => {
       .populate("owner", "name email verified seller phone")
       .lean();
 
-    res.json(populated);
+    res.json(enrichListingModeFields(populated));
   } catch (e) {
     next(e);
   }
@@ -233,7 +261,7 @@ router.patch("/:id", requireAuth, async (req, res, next) => {
       .populate("owner", "name email verified seller phone")
       .lean();
 
-    res.json(populated);
+    res.json(enrichListingModeFields(populated));
   } catch (e) {
     next(e);
   }
@@ -281,7 +309,7 @@ router.post("/:id/bid", requireAuth, async (req, res, next) => {
     item.bids.push({ bidder: req.user.id, amount, createdAt: now });
     await item.save();
     const populated = await Listing.findById(item._id).populate("owner", "name email verified seller phone").lean();
-    res.json(populated);
+    res.json(enrichListingModeFields(populated));
   } catch (e) {
     next(e);
   }

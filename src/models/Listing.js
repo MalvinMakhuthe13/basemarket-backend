@@ -7,7 +7,20 @@ const BidSchema = new mongoose.Schema({
 }, { _id: false });
 
 const ListingSchema = new mongoose.Schema({
-  owner: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  owner: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: false, default: null },
+  sourceType: { type: String, enum: ['user','sponsored'], default: 'user' },
+  moderationStatus: { type: String, enum: ['approved','pending','rejected'], default: 'approved' },
+  moderationReason: { type: String, trim: true, default: '' },
+  moderatedAt: { type: Date, default: null },
+  moderatedBy: { type: String, trim: true, default: '' },
+  isSponsored: { type: Boolean, default: false },
+  sponsoredLabel: { type: String, trim: true, default: '' },
+  sponsoredUrl: { type: String, trim: true, default: '' },
+  sponsoredCta: { type: String, trim: true, default: 'Learn more' },
+  sponsoredPriority: { type: Number, default: 0 },
+  sponsoredStartsAt: { type: Date, default: null },
+  sponsoredEndsAt: { type: Date, default: null },
+  accentColor: { type: String, trim: true, default: '' },
   title: { type: String, trim: true, default: "" },
   name: { type: String, trim: true, default: "" },
   description: { type: String, trim: true, default: "" },

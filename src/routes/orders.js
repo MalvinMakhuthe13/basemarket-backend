@@ -19,6 +19,30 @@ function makeReleaseCode() {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
+function normalizeProgressMessage(value = '', fallback = '') {
+  const clean = String(value || '').trim().replace(/\s+/g, ' ');
+  return clean || fallback;
+}
+
+async function persistSellerProgress(order, message, extra = {}) {
+  if (!order || !message) return;
+  order.latestSellerUpdate = message;
+  order.latestSellerUpdateAt = new Date();
+  Object.assign(order, extra || {});
+  await order.save();
+  await appendOrderConversationMessage(order, message);
+  await createNotification({
+    userId: order.buyer,
+    type: 'order_update',
+    title: 'Seller updated your order',
+    body: message,
+    actionUrl: '/profile.html',
+    actionLabel: 'Track order',
+    icon: 'package',
+    severity: 'info'
+  }).catch(()=>null);
+}
+
 async function createFraudFlag(entityType, entityId, reason, severity = 'medium', metadata = {}) {
   try {
     await FraudFlag.create({ entityType, entityId: String(entityId), reason, severity, metadata, createdBy: 'system' });
@@ -171,6 +195,7 @@ router.post('/:id/release-contact', requireAuth, releaseContact);
 
 router.post('/:id/mark-confirmed', requireAuth, async (req, res, next) => {
   try {
+    const { sellerNote = '' } = req.body || {};
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
     normalizeOrderState(order);
@@ -179,9 +204,9 @@ router.post('/:id/mark-confirmed', requireAuth, async (req, res, next) => {
     assertTransition(order.status, STATUS.CONFIRMED);
     order.status = STATUS.CONFIRMED;
     deriveLegacyFields(order);
-    addTimeline(order, 'order', 'Seller confirmed the order and is preparing fulfilment.');
-    await order.save();
-    await appendOrderConversationMessage(order, 'Seller confirmed the order. The order is now moving into fulfilment.');
+    const progressMessage = normalizeProgressMessage(sellerNote, 'Seller confirmed the order. The order is now moving into fulfilment.');
+    addTimeline(order, 'order', progressMessage);
+    await persistSellerProgress(order, progressMessage);
     await createNotification({ userId: order.buyer, type: 'order_update', title: 'Seller confirmed your order', body: 'Your order is now being prepared for fulfilment.', actionUrl: '/profile.html', actionLabel: 'Track order', icon: 'package-check', severity: 'success' }).catch(()=>null);
     await createNotification({ userId: order.seller, type: 'order_update', title: 'Order moved to fulfilment', body: 'This order is now confirmed and should be prepared for shipping, meetup, or delivery.', actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'package', severity: 'info' }).catch(()=>null);
     res.json({ ok: true, order: await hydrate(order._id) });
@@ -191,6 +216,7 @@ router.post('/:id/mark-confirmed', requireAuth, async (req, res, next) => {
 
 router.post('/:id/mark-preparing', requireAuth, async (req, res, next) => {
   try {
+    const { sellerNote = '' } = req.body || {};
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
     normalizeOrderState(order);
@@ -200,11 +226,9 @@ router.post('/:id/mark-preparing', requireAuth, async (req, res, next) => {
     if (order.status === STATUS.PAID) order.status = STATUS.CONFIRMED;
     order.sellerPreparingAt = order.sellerPreparingAt || new Date();
     deriveLegacyFields(order);
-    addTimeline(order, 'fulfilment', order.deliveryMethod === 'meetup' ? 'Seller started preparing the meetup handover.' : 'Seller started preparing the shipment.');
-    await order.save();
-    const updateText = order.deliveryMethod === 'meetup' ? 'Seller is now preparing your meetup handover.' : 'Seller is now preparing your shipment.';
-    await appendOrderConversationMessage(order, updateText);
-    await createNotification({ userId: order.buyer, type: 'order_update', title: 'Seller started preparing your order', body: updateText, actionUrl: '/profile.html', actionLabel: 'Track order', icon: 'box', severity: 'info' }).catch(()=>null);
+    const updateText = normalizeProgressMessage(sellerNote, order.deliveryMethod === 'meetup' ? 'Seller is now preparing your meetup handover.' : 'Seller is now preparing your shipment.');
+    addTimeline(order, 'fulfilment', updateText);
+    await persistSellerProgress(order, updateText);
     await createNotification({ userId: order.seller, type: 'order_update', title: 'Preparing stage saved', body: 'The buyer can now see that you are preparing the order.', actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'box', severity: 'success' }).catch(()=>null);
     res.json({ ok: true, order: await hydrate(order._id) });
   } catch (e) { next(e); }
@@ -212,7 +236,7 @@ router.post('/:id/mark-preparing', requireAuth, async (req, res, next) => {
 
 router.post('/:id/mark-shipped', requireAuth, async (req, res, next) => {
   try {
-    const { trackingNumber = '' } = req.body || {};
+    const { trackingNumber = '', sellerNote = '' } = req.body || {};
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
     normalizeOrderState(order);
@@ -227,10 +251,9 @@ router.post('/:id/mark-shipped', requireAuth, async (req, res, next) => {
     order.sellerMarkedShippedAt = new Date();
     order.status = order.deliveryMethod === 'meetup' ? STATUS.DELIVERED : STATUS.SHIPPED;
     deriveLegacyFields(order);
-    addTimeline(order, 'fulfilment', order.deliveryMethod === 'meetup' ? 'Seller marked the item ready for meetup and handover.' : `Seller marked the item shipped${trackingNumber ? ` (${trackingNumber})` : ''}.`);
-    await order.save();
-    await appendOrderConversationMessage(order, order.deliveryMethod === 'meetup' ? 'Seller marked the order ready for meetup / handover.' : `Seller marked the order shipped${trackingNumber ? ` (${trackingNumber})` : ''}.`);
-    await createNotification({ userId: order.buyer, type: 'order_update', title: order.deliveryMethod === 'meetup' ? 'Meetup order ready' : 'Order shipped', body: order.deliveryMethod === 'meetup' ? 'The seller marked your order ready for meetup / handover.' : 'Your seller marked the order as shipped.', actionUrl: '/profile.html', actionLabel: 'Track order', icon: 'truck', severity: 'info' }).catch(()=>null);
+    const shippedText = normalizeProgressMessage(sellerNote, order.deliveryMethod === 'meetup' ? 'Seller marked the order ready for meetup / handover.' : `Seller marked the order shipped${trackingNumber ? ` (${trackingNumber})` : ''}.`);
+    addTimeline(order, 'fulfilment', shippedText);
+    await persistSellerProgress(order, shippedText);
     await createNotification({ userId: order.seller, type: 'order_update', title: order.deliveryMethod === 'meetup' ? 'Meetup marked ready' : 'Shipment update saved', body: order.deliveryMethod === 'meetup' ? 'The order now waits for the buyer handover confirmation.' : 'The buyer has been notified that the order shipped.', actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'truck', severity: 'success' }).catch(()=>null);
     res.json({ ok: true, order: await hydrate(order._id) });
   } catch (e) { next(e); }
@@ -323,6 +346,7 @@ router.post('/:id/mark-paid-out', requireAuth, async (req, res, next) => {
 
 router.post('/:id/mark-delivered', requireAuth, async (req, res, next) => {
   try {
+    const { sellerNote = '' } = req.body || {};
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
     normalizeOrderState(order);
@@ -334,9 +358,9 @@ router.post('/:id/mark-delivered', requireAuth, async (req, res, next) => {
     order.status = STATUS.DELIVERED;
     order.sellerMarkedShippedAt = order.sellerMarkedShippedAt || new Date();
     deriveLegacyFields(order);
-    addTimeline(order, 'fulfilment', order.deliveryMethod === 'meetup' ? 'Seller marked the meetup handover complete.' : 'Seller marked the shipment delivered / handed over.');
-    await order.save();
-    await appendOrderConversationMessage(order, order.deliveryMethod === 'meetup' ? 'Seller marked the meetup handover complete.' : 'Seller marked the order delivered / handed over.');
+    const deliveredText = normalizeProgressMessage(sellerNote, order.deliveryMethod === 'meetup' ? 'Seller marked the meetup handover complete.' : 'Seller marked the order delivered / handed over.');
+    addTimeline(order, 'fulfilment', deliveredText);
+    await persistSellerProgress(order, deliveredText);
     await createNotification({ userId: order.buyer, type: 'order_update', title: 'Seller marked the order delivered', body: 'Please confirm delivery if everything is correct.', actionUrl: '/profile.html', actionLabel: 'Track order', icon: 'package-check', severity: 'info' }).catch(()=>null);
     await createNotification({ userId: order.seller, type: 'order_update', title: 'Delivery stage recorded', body: 'The order has moved to delivered and now waits for buyer confirmation.', actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'package-check', severity: 'success' }).catch(()=>null);
     res.json({ ok: true, order: await hydrate(order._id) });
@@ -345,10 +369,27 @@ router.post('/:id/mark-delivered', requireAuth, async (req, res, next) => {
 
 
 
+router.post('/:id/progress-note', requireAuth, async (req, res, next) => {
+  try {
+    const { message = '' } = req.body || {};
+    const clean = normalizeProgressMessage(message);
+    if (!clean) return res.status(400).json({ message: 'Update message is required' });
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    normalizeOrderState(order);
+    if (String(order.seller) !== String(req.user.id)) return res.status(403).json({ message: 'Not allowed' });
+    if ([STATUS.CANCELLED, STATUS.COMPLETED, STATUS.REFUNDED].includes(order.status)) return res.status(400).json({ message: 'This order is already finished' });
+    addTimeline(order, 'seller_update', clean);
+    await persistSellerProgress(order, clean);
+    await createNotification({ userId: order.seller, type: 'order_update', title: 'Buyer progress view updated', body: 'Your latest update is now visible to the buyer.', actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'message-square', severity: 'success' }).catch(()=>null);
+    res.json({ ok: true, order: await hydrate(order._id) });
+  } catch (e) { next(e); }
+});
+
 router.delete('/:id', requireAuth, async (req, res, next) => {
   try {
     const order = await Order.findById(req.params.id);
-    if (!order) return res.status(404).json({ message: 'Order not found' });
+    if (!order) return res.json({ ok: true, alreadyDeleted: true });
     const myId = String(req.user.id);
     const allowed = String(order.buyer) === myId || String(order.seller) === myId || req.user.role === 'admin';
     if (!allowed) return res.status(403).json({ message: 'Not allowed' });

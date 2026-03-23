@@ -55,6 +55,26 @@ router.get('/analytics', async (_req, res, next) => {
   } catch (e) { next(e); }
 });
 
+
+router.get('/fraud-flags', async (req, res, next) => {
+  try {
+    const status = String(req.query.status || 'open').trim().toLowerCase();
+    const filter = status === 'all' ? {} : { status };
+    const flags = await FraudFlag.find(filter).sort({ createdAt: -1 }).limit(300).lean();
+    res.json({ flags });
+  } catch (e) { next(e); }
+});
+
+router.post('/fraud-flags/:id/resolve', async (req, res, next) => {
+  try {
+    const status = String(req.body?.status || 'resolved').trim().toLowerCase();
+    if (!['reviewed','resolved','dismissed'].includes(status)) return res.status(400).json({ message: 'Invalid fraud status' });
+    const flag = await FraudFlag.findByIdAndUpdate(req.params.id, { status, resolvedAt: new Date() }, { new: true }).lean();
+    if (!flag) return res.status(404).json({ message: 'Fraud flag not found' });
+    res.json({ ok: true, flag });
+  } catch (e) { next(e); }
+});
+
 router.get('/overview', async (_req, res, next) => {
   try {
     const [users, listings, orders, fraudOpen] = await Promise.all([
@@ -142,20 +162,89 @@ router.post("/verification-code", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.get('/listings', async (_req, res, next) => {
+
+router.get('/listings', async (req, res, next) => {
   try {
-    const listings = await Listing.find({}).populate('owner', 'name email').sort({ createdAt: -1 }).limit(300).lean();
+    const q = String(req.query.search || '').trim();
+    const status = String(req.query.status || 'all').trim().toLowerCase();
+    const sourceType = String(req.query.sourceType || 'all').trim().toLowerCase();
+    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const filter = {};
+    if (status !== 'all') filter.moderationStatus = status;
+    if (sourceType !== 'all') filter.sourceType = sourceType;
+    if (escaped) filter.$or = [
+      { title: { $regex: escaped, $options: 'i' } },
+      { name: { $regex: escaped, $options: 'i' } },
+      { description: { $regex: escaped, $options: 'i' } },
+    ];
+    const listings = await Listing.find(filter).populate('owner', 'name email').sort({ isSponsored: -1, sponsoredPriority: -1, createdAt: -1 }).limit(400).lean();
     res.json({ listings });
   } catch (e) { next(e); }
 });
 
-router.delete('/listings/:id', async (req, res, next) => {
+router.post('/listings/:id/moderate', async (req, res, next) => {
   try {
+    const { action, reason } = req.body || {};
     const listing = await Listing.findById(req.params.id);
     if (!listing) return res.status(404).json({ message: 'Listing not found' });
-    listing.status = 'deleted';
+    const normalized = String(action || '').toLowerCase();
+    if (!['approve','reject','pause','restore','delete'].includes(normalized)) return res.status(400).json({ message: 'Invalid action' });
+    if (normalized === 'approve') {
+      listing.moderationStatus = 'approved';
+      if (listing.status === 'paused') listing.status = 'active';
+    }
+    if (normalized === 'reject') {
+      listing.moderationStatus = 'rejected';
+      listing.status = 'paused';
+    }
+    if (normalized === 'pause') listing.status = 'paused';
+    if (normalized === 'restore') {
+      listing.status = 'active';
+      if (listing.moderationStatus === 'rejected') listing.moderationStatus = 'approved';
+    }
+    if (normalized === 'delete') listing.status = 'deleted';
+    listing.moderationReason = String(reason || '');
+    listing.moderatedAt = new Date();
+    listing.moderatedBy = 'admin';
     await listing.save();
-    res.json({ ok: true });
+    res.json({ ok: true, listing });
+  } catch (e) { next(e); }
+});
+
+router.post('/sponsored-listings', async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    if (!String(b.title || '').trim()) return res.status(400).json({ message: 'Title is required' });
+    const item = await Listing.create({
+      owner: null,
+      sourceType: 'sponsored',
+      isSponsored: true,
+      moderationStatus: 'approved',
+      moderatedAt: new Date(),
+      moderatedBy: 'admin',
+      title: String(b.title || '').trim(),
+      name: String(b.title || '').trim(),
+      description: String(b.description || '').trim(),
+      price: Number(b.price || 0),
+      currency: String(b.currency || 'ZAR').trim() || 'ZAR',
+      category: String(b.category || 'sell').trim() || 'sell',
+      images: Array.isArray(b.images) ? b.images : (b.image ? [b.image] : []),
+      location: String(b.location || '').trim(),
+      deliveryType: 'both',
+      allowOffers: false,
+      allowTrade: false,
+      allowBundles: false,
+      status: String(b.status || 'active') === 'paused' ? 'paused' : 'active',
+      sponsoredLabel: String(b.sponsoredLabel || 'Sponsored').trim() || 'Sponsored',
+      sponsoredUrl: String(b.sponsoredUrl || '').trim(),
+      sponsoredCta: String(b.sponsoredCta || 'Shop now').trim() || 'Shop now',
+      sponsoredPriority: Number(b.sponsoredPriority || 0),
+      sponsoredStartsAt: b.sponsoredStartsAt ? new Date(b.sponsoredStartsAt) : null,
+      sponsoredEndsAt: b.sponsoredEndsAt ? new Date(b.sponsoredEndsAt) : null,
+      accentColor: String(b.accentColor || '').trim(),
+    });
+    const listing = await Listing.findById(item._id).lean();
+    res.json({ ok: true, listing });
   } catch (e) { next(e); }
 });
 

@@ -10,6 +10,11 @@ const SellerSchema = new mongoose.Schema({
   requestedAt: { type: Date },
   decidedAt: { type: Date },
   decisionReason: { type: String, default: "" },
+  fullName: { type: String, trim: true, default: "" },
+  area: { type: String, trim: true, default: "" },
+  selfieProvided: { type: Boolean, default: false },
+  proofProvided: { type: Boolean, default: false },
+  reviewNotes: { type: String, trim: true, default: "" },
 }, { _id: false });
 
 const UserSchema = new mongoose.Schema({

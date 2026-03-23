@@ -13,6 +13,8 @@ const ConversationSchema = new mongoose.Schema({
   messages: { type: [MessageSchema], default: [] },
   lastMessage: { type: String, default: "" },
   lastMessageAt: { type: Date },
+  buyerLastReadAt: { type: Date, default: null },
+  sellerLastReadAt: { type: Date, default: null },
 }, { timestamps: true });
 
 ConversationSchema.index({ listing: 1, buyer: 1, seller: 1, order: 1 }, { unique: true });

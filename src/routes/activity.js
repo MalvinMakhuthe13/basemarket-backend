@@ -79,4 +79,21 @@ router.get('/summary', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+
+// Alias: /market-summary → same as /summary (used by bm-live-core.js widget)
+router.get('/market-summary', async (req, res, next) => {
+  // Proxy to /summary logic
+  const ActivityEvent = require('../models/ActivityEvent');
+  try {
+    const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const agg = await ActivityEvent.aggregate([
+      { $match: { createdAt: { $gte: since } } },
+      { $group: { _id: '$type', count: { $sum: 1 } } },
+    ]);
+    const summary = {};
+    for (const row of agg) { if (row._id) summary[row._id] = row.count; }
+    res.json({ ok: true, summary, period: '7d' });
+  } catch (e) { next(e); }
+});
+
 module.exports = router;

@@ -428,4 +428,60 @@ router.post('/orders/:id/payout', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+
+// ── Steal of the Day ─────────────────────────────────────────────────────────
+let _stealOfDay = null;
+
+router.get('/steal-of-the-day', (req, res) => {
+  res.json({ ok: true, steal: _stealOfDay });
+});
+router.post('/steal-of-the-day', (req, res) => {
+  const { listingId, note } = req.body || {};
+  if (!listingId) return res.status(400).json({ message: 'listingId required' });
+  _stealOfDay = { listingId, note: note || '', setAt: new Date().toISOString() };
+  if (req.app.locals.broadcast) req.app.locals.broadcast('steal_of_day_updated', _stealOfDay);
+  res.json({ ok: true, steal: _stealOfDay });
+});
+router.delete('/steal-of-the-day', (req, res) => {
+  _stealOfDay = null;
+  res.json({ ok: true });
+});
+
+// ── Platform settings ─────────────────────────────────────────────────────────
+let _settings = { emergency: { pauseMarketplace: false, disableNewListings: false, lockTransactions: false, shadowMode: false } };
+
+router.get('/settings', (req, res) => {
+  res.json({ ok: true, settings: _settings });
+});
+router.patch('/settings', (req, res) => {
+  _settings = { ..._settings, ...req.body };
+  if (req.app.locals.broadcast) req.app.locals.broadcast('admin_settings_updated', _settings);
+  res.json({ ok: true, settings: _settings });
+});
+
+// ── Events summary ────────────────────────────────────────────────────────────
+router.get('/events/summary', async (req, res, next) => {
+  try {
+    const ActivityEvent = require('../models/ActivityEvent');
+    const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const types = await ActivityEvent.aggregate([
+      { $match: { createdAt: { $gte: since } } },
+      { $group: { _id: '$type', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 20 },
+    ]);
+    res.json({ ok: true, types, period: '7d' });
+  } catch (e) { next(e); }
+});
+
+// ── Broadcast ─────────────────────────────────────────────────────────────────
+router.post('/broadcast', (req, res) => {
+  const { title, body } = req.body || {};
+  if (!title) return res.status(400).json({ message: 'title required' });
+  if (req.app.locals.broadcast) {
+    req.app.locals.broadcast('admin_broadcast', { title, body: body || '' });
+  }
+  res.json({ ok: true, sent: true });
+});
+
 module.exports = router;

@@ -446,4 +446,39 @@ router.delete('/:id', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+
+// ── Missing routes added for frontend compatibility ────────────────────────
+
+router.post('/:id/review', requireAuth, async (req, res, next) => {
+  try {
+    const { rating, comment = '' } = req.body || {};
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    if (String(order.buyer) !== String(req.user.id)) return res.status(403).json({ message: 'Only the buyer can leave a review' });
+    if (!rating || Number(rating) < 1 || Number(rating) > 5) return res.status(400).json({ message: 'Rating must be between 1 and 5' });
+    if (order.reviewSubmitted) return res.status(400).json({ message: 'Review already submitted for this order' });
+    order.review = { rating: Number(rating), comment: String(comment).trim().slice(0, 500), submittedAt: new Date() };
+    order.reviewSubmitted = true;
+    addTimeline(order, 'review', `Buyer left a ${rating}-star review.`);
+    await order.save();
+    await createNotification({ userId: order.seller, type: 'review', title: 'You received a review', body: `Buyer left a ${rating}-star review on your order.`, actionUrl: '/profile.html', actionLabel: 'View sold orders', icon: 'star', severity: 'success' }).catch(()=>null);
+    res.json({ ok: true, review: order.review });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/send-buyer-nudge', requireAuth, async (req, res, next) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    if (String(order.seller) !== String(req.user.id)) return res.status(403).json({ message: 'Only the seller can nudge the buyer' });
+    const now = Date.now();
+    const lastNudge = order.lastBuyerNudgeAt ? new Date(order.lastBuyerNudgeAt).getTime() : 0;
+    if (now - lastNudge < 60 * 60 * 1000) return res.status(429).json({ message: 'You can only nudge the buyer once per hour' });
+    order.lastBuyerNudgeAt = new Date();
+    await order.save();
+    await createNotification({ userId: order.buyer, type: 'order_update', title: 'Seller is waiting on you', body: 'The seller sent a reminder — please check your order and confirm delivery if everything is good.', actionUrl: '/profile.html', actionLabel: 'View order', icon: 'bell', severity: 'info' }).catch(()=>null);
+    res.json({ ok: true, message: 'Buyer nudge sent' });
+  } catch (e) { next(e); }
+});
+
 module.exports = router;

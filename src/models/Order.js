@@ -61,6 +61,21 @@ const OrderSchema = new mongoose.Schema({
     type: [{ status: { type: String, default: '' }, at: { type: Date, default: Date.now }, actor: { type: String, default: 'system' }, note: { type: String, default: '' } }],
     default: [],
   },
+
+  // Buyer review
+  review: {
+    type: {
+      rating: { type: Number, min: 1, max: 5 },
+      comment: { type: String, default: '' },
+      submittedAt: { type: Date, default: null },
+    },
+    default: null,
+  },
+  reviewSubmitted: { type: Boolean, default: false },
+
+  // Seller nudge rate-limiting
+  lastBuyerNudgeAt: { type: Date, default: null },
+
 }, { timestamps: true });
 
 module.exports = mongoose.model("Order", OrderSchema);

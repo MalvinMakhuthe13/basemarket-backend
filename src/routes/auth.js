@@ -121,4 +121,21 @@ router.get("/me", requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+
+// POST /api/auth/change-password
+router.post('/change-password', requireAuth, async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    if (!currentPassword || !newPassword) return res.status(400).json({ message: 'currentPassword and newPassword are required' });
+    if (String(newPassword).length < 8) return res.status(400).json({ message: 'New password must be at least 8 characters' });
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    const match = await bcrypt.compare(String(currentPassword), user.passwordHash);
+    if (!match) return res.status(401).json({ message: 'Current password is incorrect' });
+    user.passwordHash = await bcrypt.hash(String(newPassword), 10);
+    await user.save();
+    res.json({ ok: true, message: 'Password updated successfully' });
+  } catch (e) { next(e); }
+});
+
 module.exports = router;

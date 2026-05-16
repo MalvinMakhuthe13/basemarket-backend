@@ -28,6 +28,9 @@ const savedSearchesRoutes = require('./src/routes/savedSearches');
 const notificationsRoutes = require('./src/routes/notifications');
 const homeRoutes = require('./src/routes/home');
 const activityRoutes = require('./src/routes/activity');
+const usersRoutes = require('./src/routes/users');
+const { router: realtimeRoutes, broadcast } = require('./src/routes/realtime');
+const errorsRoutes = require('./src/routes/errors');
 const { startAlertJobs } = require('./src/utils/alertJobs');
 const { startPayoutJobs } = require('./src/utils/payoutJobs');
 
@@ -113,6 +116,11 @@ app.use('/api/saved-searches', savedSearchesRoutes);
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api/home', homeRoutes);
 app.use('/api/activity', activityRoutes);
+app.use('/api/users', usersRoutes);
+app.use('/api/realtime', realtimeRoutes);
+// Expose broadcaster globally
+app.locals.broadcast = broadcast;
+app.use('/api/errors', errorsRoutes);
 
 app.use(notFound);
 app.use(errorHandler);

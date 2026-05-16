@@ -107,7 +107,7 @@ router.post("/create-payment", requireAuth, async (req, res) => {
     const host = process.env.PAYFAST_HOST || "https://sandbox.payfast.co.za/eng/process";
     const requestBase = `${req.protocol}://${req.get('host') || ''}`;
     const publicBackendBase = ensureAbsoluteUrl(process.env.PUBLIC_BACKEND_URL, requestBase);
-    const frontendOrigin = ensureAbsoluteUrl(process.env.FRONTEND_ORIGIN, requestBase);
+    const frontendOrigin = ensureAbsoluteUrl((process.env.FRONTEND_ORIGIN || '').split(',')[0].trim(), requestBase);
     const returnUrl = `${publicBackendBase}/api/payfast/return?orderId=${encodeURIComponent(String(order._id))}`;
     const cancelUrl = `${publicBackendBase}/api/payfast/cancel?orderId=${encodeURIComponent(String(order._id))}`;
     const notifyUrl = ensureAbsoluteUrl(process.env.PAYFAST_NOTIFY_URL, `${publicBackendBase}/api/payfast/itn`) || `${publicBackendBase}/api/payfast/itn`;
@@ -232,7 +232,7 @@ router.get('/return', async (req, res) => {
   try {
     const query = req.query || {};
     const orderId = query.orderId || query.m_payment_id;
-    const genericRedirect = `${ensureAbsoluteUrl(process.env.FRONTEND_ORIGIN, `${req.protocol}://${req.get('host') || ''}`)}/profile.html?tab=orders#orders`;
+    const genericRedirect = `${ensureAbsoluteUrl((process.env.FRONTEND_ORIGIN || '').split(',')[0].trim(), `${req.protocol}://${req.get('host') || ''}`)}/profile.html?tab=orders#orders`;
     if (!orderId) return res.redirect(genericRedirect);
     const order = await Order.findById(orderId);
     if (!order) return res.redirect(genericRedirect);
@@ -246,7 +246,7 @@ router.get('/return', async (req, res) => {
     }
     return res.redirect(buildFrontendOrderUrl(req, order, paymentStatus === 'COMPLETE' ? 'complete' : 'return', query));
   } catch (_err) {
-    return res.redirect(`${ensureAbsoluteUrl(process.env.FRONTEND_ORIGIN, `${req.protocol}://${req.get('host') || ''}`)}/profile.html?tab=orders#orders`);
+    return res.redirect(`${ensureAbsoluteUrl((process.env.FRONTEND_ORIGIN || '').split(',')[0].trim(), `${req.protocol}://${req.get('host') || ''}`)}/profile.html?tab=orders#orders`);
   }
 });
 
@@ -254,7 +254,7 @@ router.get('/cancel', async (req, res) => {
   try {
     const query = req.query || {};
     const orderId = query.orderId || query.m_payment_id;
-    const genericRedirect = `${ensureAbsoluteUrl(process.env.FRONTEND_ORIGIN, `${req.protocol}://${req.get('host') || ''}`)}/profile.html?tab=orders&payfast=cancel#orders`;
+    const genericRedirect = `${ensureAbsoluteUrl((process.env.FRONTEND_ORIGIN || '').split(',')[0].trim(), `${req.protocol}://${req.get('host') || ''}`)}/profile.html?tab=orders&payfast=cancel#orders`;
     if (!orderId) return res.redirect(genericRedirect);
     const order = await Order.findById(orderId);
     if (order) {
@@ -265,7 +265,7 @@ router.get('/cancel', async (req, res) => {
     }
     return res.redirect(genericRedirect);
   } catch (_err) {
-    return res.redirect(`${ensureAbsoluteUrl(process.env.FRONTEND_ORIGIN, `${req.protocol}://${req.get('host') || ''}`)}/profile.html?tab=orders&payfast=cancel#orders`);
+    return res.redirect(`${ensureAbsoluteUrl((process.env.FRONTEND_ORIGIN || '').split(',')[0].trim(), `${req.protocol}://${req.get('host') || ''}`)}/profile.html?tab=orders&payfast=cancel#orders`);
   }
 });
 

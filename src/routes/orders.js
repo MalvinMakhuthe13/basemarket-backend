@@ -117,6 +117,12 @@ router.post("/", requireAuth, async (req, res, next) => {
       return res.status(409).json({ message: 'You already have a recent active order for this listing' });
     }
 
+    // Validate required fields BEFORE creating order to avoid zombie records
+    if (isSecure && resolvedDeliveryMethod === 'shipping') {
+      if (!cleanText(destinationCity, 80)) return res.status(400).json({ message: 'Destination city is required for courier delivery' });
+      if (!cleanText(contact, 60)) return res.status(400).json({ message: 'Contact number is required for courier delivery' });
+    }
+
     const order = await Order.create({
       listing: listing._id,
       buyer: req.user.id,
@@ -146,10 +152,6 @@ router.post("/", requireAuth, async (req, res, next) => {
     });
 
     deriveLegacyFields(order);
-    if (order.secureDeal && order.deliveryMethod === 'shipping') {
-      if (!order.destinationCity) return res.status(400).json({ message: 'Destination city is required for courier delivery' });
-      if (!order.contact) return res.status(400).json({ message: 'Contact number is required for courier delivery' });
-    }
     await order.save();
     await trackActivity({ userId: req.user.id, type: 'order_created', entityType: 'order', entityId: String(order._id), listingId: listing._id, meta: { amount, secureDeal: isSecure, deliveryMethod: resolvedDeliveryMethod } }).catch(()=>null);
     await createNotification({ userId: sellerId, type: 'order_created', title: 'New order received', body: `${listing.title || listing.name || 'A listing'} was ordered on BaseMarket.`, actionUrl: '/profile.html', actionLabel: 'View orders', icon: 'shopping-bag', severity: 'success' }).catch(()=>null);

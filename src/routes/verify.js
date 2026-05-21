@@ -1,5 +1,6 @@
 const express = require("express");
-const { nanoid } = require("nanoid");
+const crypto = require("crypto");
+const nanoid = (size = 21) => crypto.randomBytes(size).toString("base64url").slice(0, size);
 const { requireAuth } = require("../middleware/auth");
 const User = require("../models/User");
 const ManualCode = require("../models/ManualCode");
